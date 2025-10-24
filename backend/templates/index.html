@@ -1,1 +1,24 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Telegram Parser Login</title>
+</head>
+<body>
+<h2>1️⃣ Войти через .session файл</h2>
+<form action="/login_file" method="post" enctype="multipart/form-data">
+    <input type="file" name="session_file" accept=".session" required>
+    <button type="submit">Войти</button>
+</form>
+
+<hr>
+
+<h2>2️⃣ Войти вручную</h2>
+<form action="/login_manual" method="post">
+    <input type="text" name="session_name" placeholder="Имя сессии" required><br>
+    <input type="number" name="api_id" placeholder="API ID" required><br>
+    <input type="text" name="api_hash" placeholder="API HASH" required><br>
+    <button type="submit">Войти вручную</button>
+</form>
+</body>
+</html>
 
