@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Form, UploadFile
+from fastapi import FastAPI, Form, UploadFile, Query
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from telethon import TelegramClient
@@ -26,10 +26,7 @@ async def login_file(session_file: UploadFile):
     with open(path, "wb") as f:
         shutil.copyfileobj(session_file.file, f)
 
-    # Имя сессии без расширения
     session_name = path.replace(".session", "")
-
-    # Telethon всё равно требует непустые ID/HASH, но они могут быть любыми
     dummy_id = 12345
     dummy_hash = "0123456789abcdef0123456789abcdef"
 
@@ -40,7 +37,7 @@ async def login_file(session_file: UploadFile):
         return HTMLResponse("<h3>❌ Сессия недействительна или устарела</h3>")
 
     clients[session_file.filename] = client
-    return HTMLResponse('<h3>✅ Успешный вход!</h3><br><a href="/chats">Показать чаты</a>')
+    return HTMLResponse('<h3>✅ Успешный вход!</h3><br><a href="/chats?offset=0">Показать чаты</a>')
 
 
 @app.post("/login_manual")
@@ -54,21 +51,35 @@ async def login_manual(api_id: int = Form(...), api_hash: str = Form(...)):
         return HTMLResponse("<h3>❌ Авторизация требуется (код из Telegram)</h3>")
 
     clients["manual_login"] = client
-    return HTMLResponse('<h3>✅ Вход выполнен вручную!</h3><br><a href="/chats">Показать чаты</a>')
+    return HTMLResponse('<h3>✅ Вход выполнен вручную!</h3><br><a href="/chats?offset=0">Показать чаты</a>')
 
 
 @app.get("/chats", response_class=HTMLResponse)
-async def get_chats():
-    """Вывод чатов"""
+async def get_chats(offset: int = Query(0, ge=0)):
+    """Вывод чатов с пагинацией"""
     if not clients:
         return HTMLResponse("<h3>Нет активной сессии</h3>")
 
     client = list(clients.values())[0]
-    dialogs = await client.get_dialogs(limit=100)
+    limit = 100
 
-    html = "<h2>Список чатов:</h2><ul>"
+    # Получаем список диалогов, начиная с offset
+    dialogs = await client.get_dialogs(limit=limit + offset)
+    dialogs = dialogs[offset:offset + limit]
+
+    html = f"<h2>Список чатов (с {offset + 1} по {offset + len(dialogs)}):</h2><ul>"
     for d in dialogs:
         html += f"<li>{d.name or 'Без названия'} — <b>ID:</b> {d.id}</li>"
     html += "</ul>"
+
+    # Кнопки пагинации
+    html += "<div style='margin-top:20px;'>"
+    if offset > 0:
+        prev_offset = max(offset - limit, 0)
+        html += f"<a href='/chats?offset={prev_offset}'>&laquo; Предыдущие</a> | "
+    if len(dialogs) == limit:
+        next_offset = offset + limit
+        html += f"<a href='/chats?offset={next_offset}'>Следующие &raquo;</a>"
+    html += "</div>"
 
     return HTMLResponse(html)
