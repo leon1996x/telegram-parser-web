@@ -16,7 +16,7 @@ clients = {}
 
 @app.get("/", response_class=HTMLResponse)
 async def index():
-    return open("backend/templates/login.html", "r", encoding="utf-8").read()
+    return open("backend/templates/index.html", "r", encoding="utf-8").read()
 
 
 @app.post("/login_file")
