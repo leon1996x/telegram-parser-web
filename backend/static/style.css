@@ -1,1 +1,91 @@
+body {
+    font-family: "Segoe UI", Arial, sans-serif;
+    background: #f4f5f7;
+    color: #333;
+    padding: 30px;
+    text-align: center;
+}
+
+h1, h2 {
+    color: #222;
+}
+
+form {
+    background: white;
+    padding: 20px;
+    margin: 15px auto;
+    border-radius: 10px;
+    box-shadow: 0 0 10px rgba(0,0,0,0.1);
+    width: 320px;
+}
+
+input[type="text"],
+input[type="number"],
+input[type="file"] {
+    width: 90%;
+    padding: 10px;
+    margin: 8px 0;
+    border: 1px solid #ccc;
+    border-radius: 8px;
+}
+
+button, .btn {
+    display: inline-block;
+    background: #3b82f6;
+    color: white;
+    border: none;
+    border-radius: 8px;
+    padding: 10px 16px;
+    cursor: pointer;
+    text-decoration: none;
+    transition: 0.2s;
+}
+
+button:hover, .btn:hover {
+    background: #2563eb;
+}
+
+.success {
+    color: #0f5132;
+    background: #d1e7dd;
+    border: 1px solid #badbcc;
+    border-radius: 8px;
+    padding: 10px;
+    margin: 15px auto;
+    width: 320px;
+}
+
+.error {
+    color: #842029;
+    background: #f8d7da;
+    border: 1px solid #f5c2c7;
+    border-radius: 8px;
+    padding: 10px;
+    margin: 15px auto;
+    width: 320px;
+}
+
+.chat-list {
+    list-style: none;
+    padding: 0;
+    margin: 20px auto;
+    max-width: 600px;
+}
+
+.chat-list li {
+    background: white;
+    margin-bottom: 10px;
+    padding: 10px;
+    border-radius: 10px;
+    box-shadow: 0 0 5px rgba(0,0,0,0.1);
+    text-align: left;
+}
+
+.pagination {
+    margin-top: 20px;
+}
+
+.back {
+    margin-top: 30px;
+}
 
