@@ -1,1 +1,14 @@
-
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Список чатов</title>
+</head>
+<body>
+<h2>Ваши чаты:</h2>
+<ul>
+{% for chat in chats %}
+    <li>{{ chat }}</li>
+{% endfor %}
+</ul>
+</body>
+</html>
