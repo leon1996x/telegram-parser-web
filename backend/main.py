@@ -11,12 +11,13 @@ app.mount("/static", StaticFiles(directory="backend/static"), name="static")
 SESSIONS_DIR = "backend/sessions"
 os.makedirs(SESSIONS_DIR, exist_ok=True)
 
-clients = {}  # Активные клиенты
+clients = {}
 
 
 @app.get("/", response_class=HTMLResponse)
 async def index():
-    return open("backend/templates/index.html", "r", encoding="utf-8").read()
+    with open("backend/templates/index.html", "r", encoding="utf-8") as f:
+        return HTMLResponse(f.read())
 
 
 @app.post("/login_file")
@@ -34,24 +35,30 @@ async def login_file(session_file: UploadFile):
     await client.connect()
 
     if not await client.is_user_authorized():
-        return HTMLResponse("<h3>❌ Сессия недействительна или устарела</h3>")
+        return HTMLResponse('<div class="error">❌ Сессия недействительна или устарела</div>')
 
     clients[session_file.filename] = client
-    return HTMLResponse('<h3>✅ Успешный вход!</h3><br><a href="/chats?offset=0">Показать чаты</a>')
+    return HTMLResponse('''
+        <div class="success">✅ Успешный вход!</div>
+        <a class="btn" href="/chats?offset=0">Показать чаты</a>
+    ''')
 
 
 @app.post("/login_manual")
 async def login_manual(api_id: int = Form(...), api_hash: str = Form(...)):
-    """Авторизация вручную (для случаев без .session)"""
+    """Авторизация вручную"""
     session_path = os.path.join(SESSIONS_DIR, "manual_login")
     client = TelegramClient(session_path, api_id, api_hash)
     await client.connect()
 
     if not await client.is_user_authorized():
-        return HTMLResponse("<h3>❌ Авторизация требуется (код из Telegram)</h3>")
+        return HTMLResponse('<div class="error">❌ Требуется ввести код из Telegram</div>')
 
     clients["manual_login"] = client
-    return HTMLResponse('<h3>✅ Вход выполнен вручную!</h3><br><a href="/chats?offset=0">Показать чаты</a>')
+    return HTMLResponse('''
+        <div class="success">✅ Вход выполнен вручную!</div>
+        <a class="btn" href="/chats?offset=0">Показать чаты</a>
+    ''')
 
 
 @app.get("/chats", response_class=HTMLResponse)
@@ -62,24 +69,30 @@ async def get_chats(offset: int = Query(0, ge=0)):
 
     client = list(clients.values())[0]
     limit = 100
-
-    # Получаем список диалогов, начиная с offset
     dialogs = await client.get_dialogs(limit=limit + offset)
     dialogs = dialogs[offset:offset + limit]
 
-    html = f"<h2>Список чатов (с {offset + 1} по {offset + len(dialogs)}):</h2><ul>"
+    html = f"""
+    <html>
+    <head>
+        <link rel="stylesheet" href="/static/style.css">
+        <title>Список чатов</title>
+    </head>
+    <body>
+        <h1>Список чатов ({offset + 1}–{offset + len(dialogs)})</h1>
+        <ul class="chat-list">
+    """
     for d in dialogs:
-        html += f"<li>{d.name or 'Без названия'} — <b>ID:</b> {d.id}</li>"
+        html += f"<li><b>{d.name or 'Без названия'}</b><br><span>ID: {d.id}</span></li>"
     html += "</ul>"
 
-    # Кнопки пагинации
-    html += "<div style='margin-top:20px;'>"
+    html += "<div class='pagination'>"
     if offset > 0:
-        prev_offset = max(offset - limit, 0)
-        html += f"<a href='/chats?offset={prev_offset}'>&laquo; Предыдущие</a> | "
+        html += f"<a class='btn' href='/chats?offset={max(offset - limit, 0)}'>&laquo; Назад</a>"
     if len(dialogs) == limit:
-        next_offset = offset + limit
-        html += f"<a href='/chats?offset={next_offset}'>Следующие &raquo;</a>"
+        html += f"<a class='btn' href='/chats?offset={offset + limit}'>Далее &raquo;</a>"
     html += "</div>"
 
+    html += '<div class="back"><a href="/">↩ На главную</a></div>'
+    html += "</body></html>"
     return HTMLResponse(html)
