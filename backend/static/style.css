@@ -65,6 +65,7 @@ button:hover, .btn:hover {
     width: 320px;
 }
 
+/* --- Telegram-style список чатов --- */
 .chat-list {
     list-style: none;
     padding: 0;
@@ -73,12 +74,51 @@ button:hover, .btn:hover {
 }
 
 .chat-list li {
+    display: flex;
+    align-items: center;
+    gap: 12px;
     background: white;
     margin-bottom: 10px;
-    padding: 10px;
-    border-radius: 10px;
-    box-shadow: 0 0 5px rgba(0,0,0,0.1);
+    padding: 12px;
+    border-radius: 12px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08);
+    transition: transform 0.1s ease, box-shadow 0.2s ease;
+}
+
+.chat-list li:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 2px 8px rgba(0,0,0,0.12);
+}
+
+.chat-avatar {
+    width: 48px;
+    height: 48px;
+    border-radius: 50%;
+    background: #e5e7eb;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: bold;
+    color: #555;
+    flex-shrink: 0;
+    font-size: 18px;
+}
+
+.chat-info {
+    flex: 1;
     text-align: left;
+}
+
+.chat-info b {
+    font-size: 16px;
+    color: #111;
+}
+
+.chat-info span {
+    display: block;
+    color: #666;
+    font-size: 13px;
+    margin-top: 2px;
 }
 
 .pagination {
