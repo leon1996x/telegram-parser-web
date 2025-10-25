@@ -96,9 +96,9 @@ async def get_chats(offset: int = Query(0, ge=0)):
         else:
             media_type = getattr(dialog.message, "media", None)
             if media_type:
-                last_message = f"[{type(media_type).__name__}]"
+                last_message = f"[Медиа]"
             else:
-                last_message = "(пусто)"
+                last_message = "(нет сообщений)"
 
         # Получаем время сообщения с датой
         if dialog.message and hasattr(dialog.message, 'date'):
@@ -121,12 +121,15 @@ async def get_chats(offset: int = Query(0, ge=0)):
             except:
                 avatar_url = "https://upload.wikimedia.org/wikipedia/commons/8/89/Portrait_Placeholder.png"
 
+        # Экранируем HTML символы в сообщении
+        safe_message = str(last_message).replace('<', '&lt;').replace('>', '&gt;')[:90]
+
         html += f"""
         <div class="chat-card">
             <img src="{avatar_url}" class="chat-avatar" onerror="this.src='https://upload.wikimedia.org/wikipedia/commons/8/89/Portrait_Placeholder.png'">
             <div class="chat-info">
                 <div class="chat-title">{title}</div>
-                <div class="chat-last">{str(last_message)[:90].replace('<', '&lt;').replace('>', '&gt;')}</div>
+                <div class="chat-last">{safe_message}</div>
                 <div class="chat-time">{message_time}</div>
                 <div class="chat-id">ID: {entity.id}</div>
             </div>
