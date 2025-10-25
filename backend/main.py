@@ -77,19 +77,28 @@ async def get_chats(offset: int = Query(0, ge=0)):
     html = """
     <html>
     <head>
-        <meta charset='utf-8'>
-        <link rel='stylesheet' href='/static/style.css'>
+        <link rel="stylesheet" href="/static/style.css">
         <title>Список чатов</title>
     </head>
     <body>
-        <h1>📱 Ваши чаты</h1>
-        <div class='chat-container'>
+        <h1>Список чатов</h1>
+        <div class="chat-container">
     """
 
     for dialog in dialogs:
         entity = dialog.entity
         title = dialog.name or "Без названия"
-        last_message = dialog.message.message if dialog.message else "(пусто)"
+
+        # Безопасное извлечение последнего сообщения
+        if dialog.message and getattr(dialog.message, "message", None):
+            last_message = dialog.message.message
+        else:
+            media_type = getattr(dialog.message, "media", None)
+            if media_type:
+                last_message = f"[{type(media_type).__name__}]"
+            else:
+                last_message = "(пусто)"
+
         avatar_path = os.path.join(AVATAR_DIR, f"{entity.id}.jpg")
         avatar_url = f"/static/avatars/{entity.id}.jpg"
 
@@ -105,13 +114,15 @@ async def get_chats(offset: int = Query(0, ge=0)):
             <img src="{avatar_url}" class="chat-avatar">
             <div class="chat-info">
                 <div class="chat-title">{title}</div>
-                <div class="chat-last">{last_message[:90].replace('<', '&lt;').replace('>', '&gt;')}</div>
+                <div class="chat-last">{str(last_message)[:90].replace('<', '&lt;').replace('>', '&gt;')}</div>
+                <div class="chat-id">ID: {entity.id}</div>
             </div>
         </div>
         """
 
     html += "</div>"
 
+    # Навигация
     html += "<div class='pagination'>"
     if offset > 0:
         html += f"<a class='btn' href='/chats?offset={max(offset - limit, 0)}'>&laquo; Назад</a>"
