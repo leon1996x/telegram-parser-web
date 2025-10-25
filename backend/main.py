@@ -4,6 +4,7 @@ from fastapi.staticfiles import StaticFiles
 from telethon import TelegramClient
 import os
 import shutil
+from datetime import datetime
 
 app = FastAPI()
 app.mount("/static", StaticFiles(directory="backend/static"), name="static")
@@ -99,9 +100,14 @@ async def get_chats(offset: int = Query(0, ge=0)):
             else:
                 last_message = "(пусто)"
 
-        # Получаем время сообщения
+        # Получаем время сообщения с датой
         if dialog.message and hasattr(dialog.message, 'date'):
-            message_time = dialog.message.date.strftime("%H:%M")
+            message_date = dialog.message.date
+            # Если сообщение сегодня - показываем время, иначе дату
+            if message_date.date() == datetime.now().date():
+                message_time = message_date.strftime("%H:%M")
+            else:
+                message_time = message_date.strftime("%d.%m.%y")
         else:
             message_time = "--:--"
 
