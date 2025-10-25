@@ -81,7 +81,7 @@ async def get_chats(offset: int = Query(0, ge=0)):
         <title>Список чатов</title>
     </head>
     <body>
-        <h1>Список чатов</h1>
+        <h1 style="text-align:center; margin-bottom:20px;">💬 Список чатов</h1>
         <div class="chat-container">
     """
 
@@ -99,6 +99,12 @@ async def get_chats(offset: int = Query(0, ge=0)):
             else:
                 last_message = "(пусто)"
 
+        # Получаем время сообщения
+        if dialog.message and hasattr(dialog.message, 'date'):
+            message_time = dialog.message.date.strftime("%H:%M")
+        else:
+            message_time = "--:--"
+
         avatar_path = os.path.join(AVATAR_DIR, f"{entity.id}.jpg")
         avatar_url = f"/static/avatars/{entity.id}.jpg"
 
@@ -111,10 +117,11 @@ async def get_chats(offset: int = Query(0, ge=0)):
 
         html += f"""
         <div class="chat-card">
-            <img src="{avatar_url}" class="chat-avatar">
+            <img src="{avatar_url}" class="chat-avatar" onerror="this.src='https://upload.wikimedia.org/wikipedia/commons/8/89/Portrait_Placeholder.png'">
             <div class="chat-info">
                 <div class="chat-title">{title}</div>
                 <div class="chat-last">{str(last_message)[:90].replace('<', '&lt;').replace('>', '&gt;')}</div>
+                <div class="chat-time">{message_time}</div>
                 <div class="chat-id">ID: {entity.id}</div>
             </div>
         </div>
