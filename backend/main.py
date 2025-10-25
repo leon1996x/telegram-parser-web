@@ -70,19 +70,20 @@ async def get_chats(offset: int = Query(0, ge=0)):
         return HTMLResponse("<h3>Нет активной сессии</h3>")
 
     client = list(clients.values())[0]
-    limit = 50  # Можно увеличить
+    limit = 50
     dialogs = await client.get_dialogs(limit=limit + offset)
     dialogs = dialogs[offset:offset + limit]
 
     html = """
     <html>
     <head>
-        <link rel="stylesheet" href="/static/style.css">
+        <meta charset='utf-8'>
+        <link rel='stylesheet' href='/static/style.css'>
         <title>Список чатов</title>
     </head>
     <body>
-        <h1>Список чатов</h1>
-        <div class="chat-container">
+        <h1>📱 Ваши чаты</h1>
+        <div class='chat-container'>
     """
 
     for dialog in dialogs:
@@ -104,8 +105,7 @@ async def get_chats(offset: int = Query(0, ge=0)):
             <img src="{avatar_url}" class="chat-avatar">
             <div class="chat-info">
                 <div class="chat-title">{title}</div>
-                <div class="chat-last">{last_message[:80].replace('<', '&lt;')}</div>
-                <div class="chat-id">ID: {entity.id}</div>
+                <div class="chat-last">{last_message[:90].replace('<', '&lt;').replace('>', '&gt;')}</div>
             </div>
         </div>
         """
