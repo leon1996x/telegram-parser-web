@@ -1,25 +1,34 @@
 from fastapi import FastAPI, Form, UploadFile, Query
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from telethon import TelegramClient
 import os
 import shutil
 from datetime import datetime
+import csv
+import json
+import zipfile
 
 app = FastAPI()
-app.mount("/static", StaticFiles(directory="backend/static"), name="static")
+app.mount("/static", StaticFiles(directory="static"), name="static")
 
-SESSIONS_DIR = "backend/sessions"
-AVATAR_DIR = "backend/static/avatars"
+SESSIONS_DIR = "sessions"
+AVATAR_DIR = "static/avatars"
+TEMPLATES_DIR = "templates"
+EXPORTS_DIR = "exports"
+DATABASE_DIR = "database"
+
 os.makedirs(SESSIONS_DIR, exist_ok=True)
 os.makedirs(AVATAR_DIR, exist_ok=True)
+os.makedirs(EXPORTS_DIR, exist_ok=True)
+os.makedirs(DATABASE_DIR, exist_ok=True)
 
 clients = {}
 
 
 @app.get("/", response_class=HTMLResponse)
 async def index():
-    with open("backend/templates/index.html", "r", encoding="utf-8") as f:
+    with open(f"{TEMPLATES_DIR}/index.html", "r", encoding="utf-8") as f:
         return HTMLResponse(f.read())
 
 
@@ -83,6 +92,11 @@ async def get_chats(offset: int = Query(0, ge=0)):
     </head>
     <body>
         <h1 style="text-align:center; margin-bottom:20px;">💬 Список чатов</h1>
+        
+        <div style="text-align:center; margin:20px;">
+            <a class="btn" href="/export_all" style="background:#10b981;">📁 Экспорт всех чатов (T3)</a>
+        </div>
+        
         <div class="chat-container">
     """
 
@@ -150,3 +164,241 @@ async def get_chats(offset: int = Query(0, ge=0)):
     html += "</body></html>"
 
     return HTMLResponse(html)
+
+
+@app.get("/export_all")
+async def export_all():
+    """Экспорт всех чатов в HTML и CSV"""
+    if not clients:
+        return HTMLResponse("<h3>Нет активной сессии</h3>")
+
+    client = list(clients.values())[0]
+    
+    # Очищаем предыдущие экспорты
+    for folder in ["chats", "csv", "participants"]:
+        folder_path = os.path.join(EXPORTS_DIR, folder)
+        for filename in os.listdir(folder_path):
+            if filename != ".gitkeep":
+                os.remove(os.path.join(folder_path, filename))
+
+    dialogs = await client.get_dialogs()
+    
+    results = []
+    total_messages = 0
+    
+    for dialog in dialogs:
+        try:
+            chat_data = await export_chat_history(client, dialog)
+            results.append(chat_data)
+            total_messages += chat_data['messages_count']
+        except Exception as e:
+            print(f"Ошибка экспорта чата {dialog.name}: {e}")
+    
+    # Создаем ZIP архив
+    zip_path = os.path.join(EXPORTS_DIR, "archives", f"export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip")
+    create_zip_archive(zip_path)
+    
+    return HTMLResponse(f'''
+        <div class="success">
+            ✅ Экспорт завершен!<br>
+            Обработано чатов: {len(results)}<br>
+            Сообщений: {total_messages}<br>
+            <a class="btn" href="/download_export">📥 Скачать ZIP архив</a>
+        </div>
+        <a class="btn" href="/chats">← Назад к чатам</a>
+    ''')
+
+
+async def export_chat_history(client, dialog):
+    """Экспорт истории конкретного чата"""
+    entity = dialog.entity
+    chat_id = entity.id
+    chat_title = getattr(entity, 'title', 'Личная переписка')
+    
+    # Собираем метаданные
+    chat_info = {
+        'id': chat_id,
+        'title': chat_title,
+        'type': 'group' if hasattr(entity, 'participants_count') else 'private',
+        'export_date': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    }
+    
+    # Получаем участников (для чатов)
+    participants = []
+    if hasattr(entity, 'participants_count'):
+        try:
+            async for user in client.iter_participants(entity):
+                participants.append({
+                    'id': user.id,
+                    'username': user.username or '',
+                    'first_name': user.first_name or '',
+                    'last_name': user.last_name or ''
+                })
+        except Exception as e:
+            print(f"Не удалось получить участников чата {chat_title}: {e}")
+            participants = [{'id': 'unknown', 'username': 'unknown', 'first_name': 'unknown', 'last_name': 'unknown'}]
+    else:
+        # Для личных чатов - только собеседник
+        if entity:
+            participants.append({
+                'id': entity.id,
+                'username': getattr(entity, 'username', ''),
+                'first_name': getattr(entity, 'first_name', ''),
+                'last_name': getattr(entity, 'last_name', '')
+            })
+    
+    # Собираем историю сообщений
+    messages_html = ""
+    messages_csv = []
+    
+    async for message in client.iter_messages(entity, limit=500):  # лимит для теста
+        msg_data = process_message(message)
+        messages_html += msg_data['html']
+        messages_csv.append(msg_data['csv'])
+    
+    # Сохраняем HTML файл
+    html_content = create_chat_html(chat_info, participants, messages_html)
+    with open(f"{EXPORTS_DIR}/chats/chat_{chat_id}.html", "w", encoding="utf-8") as f:
+        f.write(html_content)
+    
+    # Сохраняем CSV
+    with open(f"{EXPORTS_DIR}/csv/chat_{chat_id}.csv", "w", newline='', encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(['date', 'sender_id', 'sender_username', 'message_type', 'content'])
+        writer.writerows(messages_csv)
+    
+    # Сохраняем участников
+    with open(f"{EXPORTS_DIR}/participants/chat_{chat_id}.json", "w", encoding="utf-8") as f:
+        json.dump({
+            'chat_info': chat_info,
+            'participants': participants
+        }, f, ensure_ascii=False, indent=2)
+    
+    return {
+        'id': chat_id,
+        'title': chat_title,
+        'messages_count': len(messages_csv),
+        'participants_count': len(participants)
+    }
+
+
+def process_message(message):
+    """Обработка одного сообщения для HTML и CSV"""
+    # Определяем тип сообщения и отправителя
+    if message.out:
+        sender_type = "Исходящее"
+        sender_info = f"Вы (ID {message.sender_id})"
+    else:
+        sender = message.sender
+        if sender:
+            username = f"@{sender.username}" if sender.username else ""
+            sender_info = f"{username} (ID {sender.id})"
+        else:
+            sender_info = f"Unknown (ID {message.sender_id})"
+        sender_type = "Входящее"
+    
+    # Обрабатываем контент сообщения
+    if message.text:
+        content = message.text
+    elif message.media:
+        content = f"[Медиа: {type(message.media).__name__}]"
+    else:
+        content = "[Пустое сообщение]"
+    
+    # HTML версия
+    html = f"""
+    <div class="message {'outgoing' if message.out else 'incoming'}">
+        <div class="message-header">
+            <strong>{sender_type}: {sender_info}</strong>
+            <span class="message-time">{message.date.strftime('%Y-%m-%d %H:%M:%S')}</span>
+        </div>
+        <div class="message-content">{content}</div>
+    </div>
+    """
+    
+    # CSV версия
+    csv_row = [
+        message.date.strftime('%Y-%m-%d %H:%M:%S'),
+        message.sender_id,
+        getattr(message.sender, 'username', '') if message.sender else '',
+        'outgoing' if message.out else 'incoming',
+        str(content)[:500]  # ограничиваем длину для CSV
+    ]
+    
+    return {'html': html, 'csv': csv_row}
+
+
+def create_chat_html(chat_info, participants, messages_html):
+    """Создает HTML файл с историей чата"""
+    return f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <title>История чата: {chat_info['title']}</title>
+        <style>
+            body {{ font-family: Arial, sans-serif; margin: 20px; }}
+            .message {{ margin: 10px 0; padding: 10px; border-radius: 5px; }}
+            .outgoing {{ background: #e3f2fd; margin-left: 50px; }}
+            .incoming {{ background: #f5f5f5; margin-right: 50px; }}
+            .message-header {{ display: flex; justify-content: space-between; }}
+            .message-time {{ color: #666; font-size: 0.9em; }}
+            .participants {{ background: #eee; padding: 15px; margin: 20px 0; }}
+            .chat-info {{ background: #f8f9fa; padding: 15px; border-radius: 5px; }}
+        </style>
+    </head>
+    <body>
+        <h1>💬 Чат: {chat_info['title']}</h1>
+        
+        <div class="chat-info">
+            <p><strong>ID чата:</strong> {chat_info['id']}</p>
+            <p><strong>Тип:</strong> {chat_info['type']}</p>
+            <p><strong>Дата экспорта:</strong> {chat_info['export_date']}</p>
+        </div>
+        
+        <div class="participants">
+            <h3>👥 Участники ({len(participants)}):</h3>
+            {'<br>'.join([f"@{p['username']} (ID: {p['id']}) - {p['first_name']} {p['last_name']}" for p in participants if p['username']])}
+            {'' if any(p['username'] for p in participants) else '<p>Участники не найдены</p>'}
+        </div>
+        
+        <h3>📝 История сообщений:</h3>
+        <div class="messages">
+            {messages_html if messages_html else '<p>Сообщений не найдено</p>'}
+        </div>
+    </body>
+    </html>
+    """
+
+
+def create_zip_archive(zip_path):
+    """Создает ZIP архив со всеми экспортированными файлами"""
+    with zipfile.ZipFile(zip_path, 'w') as zipf:
+        for folder in ["chats", "csv", "participants"]:
+            folder_path = os.path.join(EXPORTS_DIR, folder)
+            for filename in os.listdir(folder_path):
+                if filename != ".gitkeep":
+                    file_path = os.path.join(folder_path, filename)
+                    zipf.write(file_path, f"{folder}/{filename}")
+
+
+@app.get("/download_export")
+async def download_export():
+    """Скачать последний созданный архив"""
+    archives_dir = os.path.join(EXPORTS_DIR, "archives")
+    if not os.path.exists(archives_dir) or not os.listdir(archives_dir):
+        return HTMLResponse('<div class="error">❌ Архив не найден. Сначала выполните экспорт.</div>')
+    
+    # Находим последний архив
+    archives = [f for f in os.listdir(archives_dir) if f.endswith('.zip')]
+    if not archives:
+        return HTMLResponse('<div class="error">❌ Архив не найден.</div>')
+    
+    latest_archive = sorted(archives)[-1]  # последний по времени
+    archive_path = os.path.join(archives_dir, latest_archive)
+    
+    return FileResponse(
+        archive_path,
+        filename=f"telegram_export_{datetime.now().strftime('%Y%m%d')}.zip",
+        media_type='application/zip'
+    )
