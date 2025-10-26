@@ -10,25 +10,34 @@ import json
 import zipfile
 
 app = FastAPI()
-app.mount("/static", StaticFiles(directory="static"), name="static")
 
-SESSIONS_DIR = "sessions"
-AVATAR_DIR = "static/avatars"
-TEMPLATES_DIR = "templates"
-EXPORTS_DIR = "exports"
-DATABASE_DIR = "database"
+# ПРАВИЛЬНЫЕ ПУТИ ДЛЯ RENDER
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
 
+SESSIONS_DIR = os.path.join(BASE_DIR, "sessions")
+AVATAR_DIR = os.path.join(BASE_DIR, "static", "avatars")
+TEMPLATES_DIR = os.path.join(BASE_DIR, "templates")
+EXPORTS_DIR = os.path.join(BASE_DIR, "exports")
+DATABASE_DIR = os.path.join(BASE_DIR, "database")
+
+# Создаем все необходимые папки
 os.makedirs(SESSIONS_DIR, exist_ok=True)
 os.makedirs(AVATAR_DIR, exist_ok=True)
+os.makedirs(TEMPLATES_DIR, exist_ok=True)
 os.makedirs(EXPORTS_DIR, exist_ok=True)
 os.makedirs(DATABASE_DIR, exist_ok=True)
+
+# Создаем подпапки exports
+for folder in ["chats", "csv", "participants", "archives"]:
+    os.makedirs(os.path.join(EXPORTS_DIR, folder), exist_ok=True)
 
 clients = {}
 
 
 @app.get("/", response_class=HTMLResponse)
 async def index():
-    with open(f"{TEMPLATES_DIR}/index.html", "r", encoding="utf-8") as f:
+    with open(os.path.join(TEMPLATES_DIR, "index.html"), "r", encoding="utf-8") as f:
         return HTMLResponse(f.read())
 
 
@@ -178,8 +187,9 @@ async def export_all():
     for folder in ["chats", "csv", "participants"]:
         folder_path = os.path.join(EXPORTS_DIR, folder)
         for filename in os.listdir(folder_path):
-            if filename != ".gitkeep":
-                os.remove(os.path.join(folder_path, filename))
+            file_path = os.path.join(folder_path, filename)
+            if os.path.isfile(file_path):
+                os.remove(file_path)
 
     dialogs = await client.get_dialogs()
     
@@ -227,7 +237,7 @@ async def export_chat_history(client, dialog):
     participants = []
     if hasattr(entity, 'participants_count'):
         try:
-            async for user in client.iter_participants(entity):
+            async for user in client.iter_participants(entity, limit=100):
                 participants.append({
                     'id': user.id,
                     'username': user.username or '',
@@ -251,24 +261,24 @@ async def export_chat_history(client, dialog):
     messages_html = ""
     messages_csv = []
     
-    async for message in client.iter_messages(entity, limit=500):  # лимит для теста
+    async for message in client.iter_messages(entity, limit=100):  # лимит для теста
         msg_data = process_message(message)
         messages_html += msg_data['html']
         messages_csv.append(msg_data['csv'])
     
     # Сохраняем HTML файл
     html_content = create_chat_html(chat_info, participants, messages_html)
-    with open(f"{EXPORTS_DIR}/chats/chat_{chat_id}.html", "w", encoding="utf-8") as f:
+    with open(os.path.join(EXPORTS_DIR, "chats", f"chat_{chat_id}.html"), "w", encoding="utf-8") as f:
         f.write(html_content)
     
     # Сохраняем CSV
-    with open(f"{EXPORTS_DIR}/csv/chat_{chat_id}.csv", "w", newline='', encoding="utf-8") as f:
+    with open(os.path.join(EXPORTS_DIR, "csv", f"chat_{chat_id}.csv"), "w", newline='', encoding="utf-8") as f:
         writer = csv.writer(f)
         writer.writerow(['date', 'sender_id', 'sender_username', 'message_type', 'content'])
         writer.writerows(messages_csv)
     
     # Сохраняем участников
-    with open(f"{EXPORTS_DIR}/participants/chat_{chat_id}.json", "w", encoding="utf-8") as f:
+    with open(os.path.join(EXPORTS_DIR, "participants", f"chat_{chat_id}.json"), "w", encoding="utf-8") as f:
         json.dump({
             'chat_info': chat_info,
             'participants': participants
@@ -377,8 +387,8 @@ def create_zip_archive(zip_path):
         for folder in ["chats", "csv", "participants"]:
             folder_path = os.path.join(EXPORTS_DIR, folder)
             for filename in os.listdir(folder_path):
-                if filename != ".gitkeep":
-                    file_path = os.path.join(folder_path, filename)
+                file_path = os.path.join(folder_path, filename)
+                if os.path.isfile(file_path):
                     zipf.write(file_path, f"{folder}/{filename}")
 
 
