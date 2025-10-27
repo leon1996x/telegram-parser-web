@@ -233,41 +233,49 @@ async def export_chat_history(client, dialog):
         'export_date': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     }
     
-    # Получаем участников (для чатов)
-    participants = []
-    if hasattr(entity, 'participants_count'):
-        try:
-            async for user in client.iter_participants(entity, limit=100):
-                participants.append({
-                    'id': user.id,
-                    'username': user.username or '',
-                    'first_name': user.first_name or '',
-                    'last_name': user.last_name or ''
-                })
-        except Exception as e:
-            print(f"Не удалось получить участников чата {chat_title}: {e}")
-            participants = [{'id': 'unknown', 'username': 'unknown', 'first_name': 'unknown', 'last_name': 'unknown'}]
-    else:
-        # Для личных чатов - только собеседник
-        if entity:
-            participants.append({
-                'id': entity.id,
-                'username': getattr(entity, 'username', ''),
-                'first_name': getattr(entity, 'first_name', ''),
-                'last_name': getattr(entity, 'last_name', '')
-            })
-    
-    # Собираем историю сообщений
+    # Собираем историю сообщений и участников одновременно
     messages_html = ""
     messages_csv = []
+    participants = {}  # Используем словарь чтобы избежать дубликатов
     
-    async for message in client.iter_messages(entity, limit=100):  # лимит для теста
+    async for message in client.iter_messages(entity, limit=200):  # увеличим лимит
         msg_data = process_message(message)
         messages_html += msg_data['html']
         messages_csv.append(msg_data['csv'])
+        
+        # Собираем участников из отправителей сообщений
+        if message.sender:
+            sender_id = message.sender.id
+            if sender_id not in participants:
+                participants[sender_id] = {
+                    'id': sender_id,
+                    'username': getattr(message.sender, 'username', ''),
+                    'first_name': getattr(message.sender, 'first_name', ''),
+                    'last_name': getattr(message.sender, 'last_name', '')
+                }
+    
+    # Преобразуем словарь обратно в список
+    participants_list = list(participants.values())
+    
+    # Если это группа/канал и участников мало, пробуем получить полный список
+    if hasattr(entity, 'participants_count') and len(participants_list) < 10:
+        try:
+            async for user in client.iter_participants(entity, limit=50):
+                user_id = user.id
+                if user_id not in participants:
+                    participants[user_id] = {
+                        'id': user_id,
+                        'username': user.username or '',
+                        'first_name': user.first_name or '',
+                        'last_name': user.last_name or ''
+                    }
+            participants_list = list(participants.values())
+        except Exception as e:
+            print(f"Не удалось получить участников чата {chat_title}: {e}")
+            # Продолжаем с участниками из сообщений
     
     # Сохраняем HTML файл
-    html_content = create_chat_html(chat_info, participants, messages_html)
+    html_content = create_chat_html(chat_info, participants_list, messages_html)
     with open(os.path.join(EXPORTS_DIR, "chats", f"chat_{chat_id}.html"), "w", encoding="utf-8") as f:
         f.write(html_content)
     
@@ -281,14 +289,15 @@ async def export_chat_history(client, dialog):
     with open(os.path.join(EXPORTS_DIR, "participants", f"chat_{chat_id}.json"), "w", encoding="utf-8") as f:
         json.dump({
             'chat_info': chat_info,
-            'participants': participants
+            'participants': participants_list,
+            'participants_source': 'from_messages' if len(participants_list) > 0 else 'unknown'
         }, f, ensure_ascii=False, indent=2)
     
     return {
         'id': chat_id,
         'title': chat_title,
         'messages_count': len(messages_csv),
-        'participants_count': len(participants)
+        'participants_count': len(participants_list)
     }
 
 
@@ -340,6 +349,8 @@ def process_message(message):
 
 def create_chat_html(chat_info, participants, messages_html):
     """Создает HTML файл с историей чата"""
+    participants_source = "из истории сообщений" if participants and any(p['username'] for p in participants) else "не удалось получить"
+    
     return f"""
     <!DOCTYPE html>
     <html>
@@ -355,6 +366,7 @@ def create_chat_html(chat_info, participants, messages_html):
             .message-time {{ color: #666; font-size: 0.9em; }}
             .participants {{ background: #eee; padding: 15px; margin: 20px 0; }}
             .chat-info {{ background: #f8f9fa; padding: 15px; border-radius: 5px; }}
+            .source-note {{ color: #666; font-size: 0.9em; font-style: italic; }}
         </style>
     </head>
     <body>
@@ -368,8 +380,9 @@ def create_chat_html(chat_info, participants, messages_html):
         
         <div class="participants">
             <h3>👥 Участники ({len(participants)}):</h3>
+            <p class="source-note">Источник: {participants_source}</p>
             {'<br>'.join([f"@{p['username']} (ID: {p['id']}) - {p['first_name']} {p['last_name']}" for p in participants if p['username']])}
-            {'' if any(p['username'] for p in participants) else '<p>Участники не найдены</p>'}
+            {'' if any(p['username'] for p in participants) else '<p>Участники собраны из истории сообщений</p>'}
         </div>
         
         <h3>📝 История сообщений:</h3>
