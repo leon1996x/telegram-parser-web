@@ -309,6 +309,69 @@ button:hover, .btn:hover {
     word-wrap: break-word;
 }
 
+/* Стили для медиа */
+.media-preview {
+    max-width: 300px;
+    max-height: 300px;
+    border-radius: 8px;
+    margin: 5px 0;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+    transition: transform 0.2s ease;
+    border: 2px solid #e2e8f0;
+}
+
+.media-preview:hover {
+    transform: scale(1.02);
+    border-color: #3b82f6;
+}
+
+.message-content a {
+    color: #3b82f6;
+    text-decoration: none;
+    font-weight: 500;
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 4px 8px;
+    background: #f1f5f9;
+    border-radius: 4px;
+    transition: all 0.2s ease;
+}
+
+.message-content a:hover {
+    text-decoration: none;
+    background: #3b82f6;
+    color: white;
+    transform: translateY(-1px);
+}
+
+/* Стили для разных типов медиа */
+.media-photo {
+    border-color: #10b981;
+}
+
+.media-video {
+    border-color: #ef4444;
+}
+
+.media-audio {
+    border-color: #8b5cf6;
+}
+
+.media-sticker {
+    border-color: #f59e0b;
+}
+
+.media-file {
+    border-color: #6b7280;
+}
+
+/* Иконки для типов медиа */
+.media-icon {
+    font-size: 16px;
+    margin-right: 5px;
+}
+
 /* Стили для статистики */
 .stats {
     background: #e8f5e8;
@@ -372,6 +435,23 @@ button:hover, .btn:hover {
     .chat-actions-bar {
         justify-content: center;
     }
+    
+    .media-preview {
+        max-width: 250px;
+        max-height: 250px;
+    }
+}
+
+@media (max-width: 480px) {
+    .media-preview {
+        max-width: 200px;
+        max-height: 200px;
+    }
+    
+    .message-content a {
+        font-size: 12px;
+        padding: 3px 6px;
+    }
 }
 
 /* Анимации */
@@ -405,4 +485,47 @@ button:hover, .btn:hover {
 
 .message:hover .message-time {
     background: #e2e8f0;
+}
+
+/* Специальные стили для разных типов контента */
+.message-content img,
+.message-content video,
+.message-content audio {
+    max-width: 100%;
+    border-radius: 8px;
+}
+
+/* Стили для длинных сообщений */
+.message-long-text {
+    max-height: 200px;
+    overflow-y: auto;
+    padding: 10px;
+    background: #f8f9fa;
+    border-radius: 6px;
+    border: 1px solid #e9ecef;
+}
+
+/* Стили для системных сообщений */
+.system-message {
+    background: #fff3cd;
+    border-color: #ffeaa7;
+    text-align: center;
+    font-style: italic;
+    color: #856404;
+}
+
+/* Индикаторы загрузки */
+.loading {
+    opacity: 0.7;
+    pointer-events: none;
+}
+
+.loading::after {
+    content: " ⏳";
+    animation: spin 1s linear infinite;
+}
+
+@keyframes spin {
+    0% { transform: rotate(0deg); }
+    100% { transform: rotate(360deg); }
 }
