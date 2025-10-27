@@ -8,6 +8,7 @@ from datetime import datetime
 import csv
 import json
 import zipfile
+import io
 
 app = FastAPI()
 
@@ -82,6 +83,22 @@ async def login_manual(api_id: int = Form(...), api_hash: str = Form(...)):
     ''')
 
 
+async def get_chat_creation_date(client, entity):
+    """Получает дату создания чата"""
+    try:
+        # Для каналов и супергрупп
+        if hasattr(entity, 'date'):
+            return entity.date
+        # Для обычных групп и чатов
+        elif hasattr(entity, 'participants_count'):
+            # Пытаемся найти первое сообщение
+            async for message in client.iter_messages(entity, limit=1, reverse=True):
+                return message.date
+        return None
+    except:
+        return None
+
+
 @app.get("/chats", response_class=HTMLResponse)
 async def get_chats(offset: int = Query(0, ge=0)):
     """Вывод чатов с аватарками и последними сообщениями"""
@@ -113,6 +130,10 @@ async def get_chats(offset: int = Query(0, ge=0)):
         entity = dialog.entity
         title = dialog.name or "Без названия"
 
+        # Получаем дату создания чата
+        creation_date = await get_chat_creation_date(client, entity)
+        creation_date_str = creation_date.strftime("%d.%m.%Y") if creation_date else "Неизвестно"
+
         # Безопасное извлечение последнего сообщения
         if dialog.message and getattr(dialog.message, "message", None):
             last_message = dialog.message.message
@@ -126,11 +147,7 @@ async def get_chats(offset: int = Query(0, ge=0)):
         # Получаем время сообщения с датой
         if dialog.message and hasattr(dialog.message, 'date'):
             message_date = dialog.message.date
-            # Если сообщение сегодня - показываем время, иначе дату
-            if message_date.date() == datetime.now().date():
-                message_time = message_date.strftime("%H:%M")
-            else:
-                message_time = message_date.strftime("%d.%m.%y")
+            message_time = message_date.strftime("%d.%m.%Y %H:%M")
         else:
             message_time = "--:--"
 
@@ -151,8 +168,19 @@ async def get_chats(offset: int = Query(0, ge=0)):
         <div class="chat-card">
             <img src="{avatar_url}" class="chat-avatar" onerror="this.src='https://upload.wikimedia.org/wikipedia/commons/8/89/Portrait_Placeholder.png'">
             <div class="chat-info">
-                <div class="chat-title">{title}</div>
-                <div class="chat-last">{safe_message}</div>
+                <div class="chat-title-row">
+                    <div class="chat-title">{title}</div>
+                    <div class="chat-actions">
+                        <a class="btn-download" href="/download_chat/{entity.id}?format=html">📥 HTML</a>
+                        <a class="btn-download" href="/download_chat/{entity.id}?format=txt">📄 TXT</a>
+                        <a class="btn-download" href="/download_chat/{entity.id}?format=csv">📊 CSV</a>
+                        <a class="btn-view" href="/chat/{entity.id}?offset=0">👁️ Просмотр</a>
+                    </div>
+                </div>
+                <div class="chat-meta">
+                    <span class="chat-creation">📅 Создан: {creation_date_str}</span>
+                    <span class="chat-last-msg">💬 {safe_message}</span>
+                </div>
                 <div class="chat-time">{message_time}</div>
                 <div class="chat-id">ID: {entity.id}</div>
             </div>
@@ -174,6 +202,282 @@ async def get_chats(offset: int = Query(0, ge=0)):
 
     return HTMLResponse(html)
 
+
+@app.get("/chat/{chat_id}")
+async def view_chat(chat_id: int, offset: int = Query(0, ge=0)):
+    """Детальная страница чата с сообщениями"""
+    if not clients:
+        return HTMLResponse("<h3>Нет активной сессии</h3>")
+
+    client = list(clients.values())[0]
+    limit = 50  # сообщений на страницу
+
+    try:
+        entity = await client.get_entity(chat_id)
+        chat_title = getattr(entity, 'title', 'Личная переписка')
+        creation_date = await get_chat_creation_date(client, entity)
+        
+        # Получаем сообщения
+        messages = []
+        async for message in client.iter_messages(entity, limit=limit, offset=offset):
+            messages.append(message)
+        
+        messages_html = ""
+        for message in messages:
+            if message.out:
+                sender_type = "Исходящее"
+                sender_info = f"Вы (ID {message.sender_id})"
+            else:
+                sender = message.sender
+                if sender:
+                    username = f"@{sender.username}" if sender.username else ""
+                    sender_info = f"{username} (ID {sender.id})"
+                else:
+                    sender_info = f"Unknown (ID {message.sender_id})"
+                sender_type = "Входящее"
+            
+            # Обрабатываем контент сообщения
+            if message.text:
+                content = message.text
+            elif message.media:
+                content = f"[Медиа: {type(message.media).__name__}]"
+            else:
+                content = "[Пустое сообщение]"
+            
+            messages_html += f"""
+            <div class="message {'outgoing' if message.out else 'incoming'}">
+                <div class="message-header">
+                    <strong>{sender_type}: {sender_info}</strong>
+                    <span class="message-time">{message.date.strftime('%d.%m.%Y %H:%M:%S')}</span>
+                </div>
+                <div class="message-content">{content}</div>
+            </div>
+            """
+
+        html = f"""
+        <html>
+        <head>
+            <link rel="stylesheet" href="/static/style.css">
+            <title>Чат: {chat_title}</title>
+        </head>
+        <body>
+            <div class="chat-header">
+                <h1>💬 {chat_title}</h1>
+                <div class="chat-info-bar">
+                    <span>📅 Создан: {creation_date.strftime('%d.%m.%Y') if creation_date else 'Неизвестно'}</span>
+                    <span>🆔 ID: {chat_id}</span>
+                    <span>💬 Сообщений: {len(messages)}</span>
+                </div>
+                <div class="chat-actions-bar">
+                    <a class="btn-download" href="/download_chat/{chat_id}?format=html">📥 HTML</a>
+                    <a class="btn-download" href="/download_chat/{chat_id}?format=txt">📄 TXT</a>
+                    <a class="btn-download" href="/download_chat/{chat_id}?format=csv">📊 CSV</a>
+                    <a class="btn" href="/chats">← Назад к чатам</a>
+                </div>
+            </div>
+            
+            <div class="messages-container">
+                {messages_html}
+            </div>
+            
+            <div class="pagination">
+        """
+        
+        # Навигация по сообщениям
+        if offset > 0:
+            html += f"<a class='btn' href='/chat/{chat_id}?offset={max(offset - limit, 0)}'>&laquo; Более старые</a>"
+        if len(messages) == limit:
+            html += f"<a class='btn' href='/chat/{chat_id}?offset={offset + limit}'>Более новые &raquo;</a>"
+        
+        html += "</div></body></html>"
+        
+        return HTMLResponse(html)
+        
+    except Exception as e:
+        return HTMLResponse(f'<div class="error">❌ Ошибка: {str(e)}</div>')
+
+
+@app.get("/download_chat/{chat_id}")
+async def download_chat(chat_id: int, format: str = "html"):
+    """Скачать историю одного чата в выбранном формате"""
+    if not clients:
+        return HTMLResponse("<h3>Нет активной сессии</h3>")
+
+    client = list(clients.values())[0]
+    
+    try:
+        # Получаем информацию о чате
+        entity = await client.get_entity(chat_id)
+        chat_title = getattr(entity, 'title', 'Личная переписка')
+        safe_title = "".join(c for c in chat_title if c.isalnum() or c in (' ', '-', '_')).rstrip()
+        
+        # Собираем все сообщения
+        messages = []
+        async for message in client.iter_messages(entity, limit=10000):
+            messages.append(message)
+        
+        if format == "html":
+            content = await generate_chat_html(client, entity, messages)
+            filename = f"{safe_title}_{chat_id}.html"
+            media_type = "text/html"
+        elif format == "txt":
+            content = await generate_chat_txt(client, entity, messages)
+            filename = f"{safe_title}_{chat_id}.txt"
+            media_type = "text/plain"
+        else:  # csv
+            content = await generate_chat_csv(client, entity, messages)
+            filename = f"{safe_title}_{chat_id}.csv"
+            media_type = "text/csv"
+        
+        return HTMLResponse(
+            content,
+            headers={
+                "Content-Disposition": f"attachment; filename={filename}",
+                "Content-Type": media_type
+            }
+        )
+        
+    except Exception as e:
+        return HTMLResponse(f'<div class="error">❌ Ошибка: {str(e)}</div>')
+
+
+async def generate_chat_html(client, entity, messages):
+    """Генерирует HTML файл для одного чата"""
+    chat_title = getattr(entity, 'title', 'Личная переписка')
+    creation_date = await get_chat_creation_date(client, entity)
+    
+    messages_html = ""
+    for message in reversed(messages):  # В хронологическом порядке
+        if message.out:
+            sender = "Вы"
+            sender_id = message.sender_id
+        else:
+            sender_obj = message.sender
+            if sender_obj:
+                sender = f"@{sender_obj.username}" if sender_obj.username else f"ID {sender_obj.id}"
+                sender_id = sender_obj.id
+            else:
+                sender = f"ID {message.sender_id}"
+                sender_id = message.sender_id
+        
+        content = message.text or "[Медиа]" if message.media else "[Пустое сообщение]"
+        
+        messages_html += f"""
+        <div class="message {'outgoing' if message.out else 'incoming'}">
+            <div class="message-header">
+                <strong>{sender} (ID: {sender_id})</strong>
+                <span class="message-time">{message.date.strftime('%d.%m.%Y %H:%M:%S')}</span>
+            </div>
+            <div class="message-content">{content}</div>
+        </div>
+        """
+    
+    return f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <title>{chat_title}</title>
+        <style>
+            body {{ font-family: Arial, sans-serif; margin: 20px; }}
+            .message {{ margin: 10px 0; padding: 10px; border-radius: 5px; }}
+            .outgoing {{ background: #e3f2fd; margin-left: 50px; }}
+            .incoming {{ background: #f5f5f5; margin-right: 50px; }}
+            .message-header {{ display: flex; justify-content: space-between; margin-bottom: 5px; }}
+            .message-time {{ color: #666; font-size: 0.9em; }}
+            .chat-header {{ background: #f8f9fa; padding: 20px; border-radius: 10px; margin-bottom: 20px; }}
+            .stats {{ background: #e8f5e8; padding: 10px; border-radius: 5px; margin: 10px 0; }}
+        </style>
+    </head>
+    <body>
+        <div class="chat-header">
+            <h1>💬 {chat_title}</h1>
+            <div class="stats">
+                <strong>📊 Статистика:</strong> {len(messages)} сообщений
+            </div>
+            <p><strong>🆔 ID:</strong> {entity.id}</p>
+            <p><strong>📅 Создан:</strong> {creation_date.strftime('%d.%m.%Y %H:%M') if creation_date else 'Неизвестно'}</p>
+            <p><strong>📤 Экспорт:</strong> {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}</p>
+        </div>
+        <div class="messages">
+            {messages_html}
+        </div>
+    </body>
+    </html>
+    """
+
+
+async def generate_chat_txt(client, entity, messages):
+    """Генерирует TXT файл для одного чата"""
+    chat_title = getattr(entity, 'title', 'Личная переписка')
+    creation_date = await get_chat_creation_date(client, entity)
+    
+    content = f"Чат: {chat_title}\n"
+    content += f"ID: {entity.id}\n"
+    content += f"Создан: {creation_date.strftime('%d.%m.%Y %H:%M') if creation_date else 'Неизвестно'}\n"
+    content += f"Сообщений: {len(messages)}\n"
+    content += f"Экспорт: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}\n"
+    content += "="*60 + "\n\n"
+    
+    for message in reversed(messages):
+        if message.out:
+            sender = "Вы"
+            sender_id = message.sender_id
+        else:
+            sender_obj = message.sender
+            if sender_obj:
+                sender = f"@{sender_obj.username}" if sender_obj.username else f"ID {sender_obj.id}"
+                sender_id = sender_obj.id
+            else:
+                sender = f"ID {message.sender_id}"
+                sender_id = message.sender_id
+        
+        message_text = message.text or "[Медиа]" if message.media else "[Пустое сообщение]"
+        content += f"[{message.date.strftime('%d.%m.%Y %H:%M:%S')}] {sender} (ID:{sender_id}): {message_text}\n"
+    
+    return content
+
+
+async def generate_chat_csv(client, entity, messages):
+    """Генерирует CSV файл для одного чата"""
+    chat_title = getattr(entity, 'title', 'Личная переписка')
+    
+    output = io.StringIO()
+    writer = csv.writer(output)
+    
+    # Заголовки CSV
+    writer.writerow(['Дата', 'Тип', 'Отправитель', 'ID отправителя', 'Сообщение'])
+    
+    for message in reversed(messages):
+        if message.out:
+            message_type = "Исходящее"
+            sender = "Вы"
+            sender_id = message.sender_id
+        else:
+            message_type = "Входящее"
+            sender_obj = message.sender
+            if sender_obj:
+                sender = f"@{sender_obj.username}" if sender_obj.username else f"ID {sender_obj.id}"
+                sender_id = sender_obj.id
+            else:
+                sender = f"ID {message.sender_id}"
+                sender_id = message.sender_id
+        
+        message_text = message.text or "[Медиа]" if message.media else "[Пустое сообщение]"
+        
+        writer.writerow([
+            message.date.strftime('%d.%m.%Y %H:%M:%S'),
+            message_type,
+            sender,
+            sender_id,
+            message_text
+        ])
+    
+    return output.getvalue()
+
+
+# Остальные функции (export_all, export_chat_history, etc.) остаются без изменений
+# ... [остальной код из предыдущей версии] ...
 
 @app.get("/export_all")
 async def export_all():
@@ -275,7 +579,7 @@ async def export_chat_history(client, dialog):
             # Продолжаем с участниками из сообщений
     
     # Сохраняем HTML файл
-    html_content = create_chat_html(chat_info, participants_list, messages_html)
+    html_content = create_chat_html(chat_info, participants_list, messages_html, len(messages_csv))
     with open(os.path.join(EXPORTS_DIR, "chats", f"chat_{chat_id}.html"), "w", encoding="utf-8") as f:
         f.write(html_content)
     
@@ -329,7 +633,7 @@ def process_message(message):
     <div class="message {'outgoing' if message.out else 'incoming'}">
         <div class="message-header">
             <strong>{sender_type}: {sender_info}</strong>
-            <span class="message-time">{message.date.strftime('%Y-%m-%d %H:%M:%S')}</span>
+            <span class="message-time">{message.date.strftime('%d.%m.%Y %H:%M:%S')}</span>
         </div>
         <div class="message-content">{content}</div>
     </div>
@@ -337,7 +641,7 @@ def process_message(message):
     
     # CSV версия
     csv_row = [
-        message.date.strftime('%Y-%m-%d %H:%M:%S'),
+        message.date.strftime('%d.%m.%Y %H:%M:%S'),
         message.sender_id,
         getattr(message.sender, 'username', '') if message.sender else '',
         'outgoing' if message.out else 'incoming',
@@ -347,7 +651,7 @@ def process_message(message):
     return {'html': html, 'csv': csv_row}
 
 
-def create_chat_html(chat_info, participants, messages_html):
+def create_chat_html(chat_info, participants, messages_html, total_messages):
     """Создает HTML файл с историей чата"""
     participants_source = "из истории сообщений" if participants and any(p['username'] for p in participants) else "не удалось получить"
     
@@ -367,10 +671,15 @@ def create_chat_html(chat_info, participants, messages_html):
             .participants {{ background: #eee; padding: 15px; margin: 20px 0; }}
             .chat-info {{ background: #f8f9fa; padding: 15px; border-radius: 5px; }}
             .source-note {{ color: #666; font-size: 0.9em; font-style: italic; }}
+            .stats {{ background: #e8f5e8; padding: 10px; border-radius: 5px; margin: 10px 0; }}
         </style>
     </head>
     <body>
         <h1>💬 Чат: {chat_info['title']}</h1>
+        
+        <div class="stats">
+            <strong>📊 Статистика:</strong> {total_messages} сообщений, {len(participants)} участников
+        </div>
         
         <div class="chat-info">
             <p><strong>ID чата:</strong> {chat_info['id']}</p>
@@ -385,7 +694,7 @@ def create_chat_html(chat_info, participants, messages_html):
             {'' if any(p['username'] for p in participants) else '<p>Участники собраны из истории сообщений</p>'}
         </div>
         
-        <h3>📝 История сообщений:</h3>
+        <h3>📝 История сообщений ({total_messages}):</h3>
         <div class="messages">
             {messages_html if messages_html else '<p>Сообщений не найдено</p>'}
         </div>
