@@ -21,6 +21,7 @@ AVATAR_DIR = os.path.join(BASE_DIR, "static", "avatars")
 TEMPLATES_DIR = os.path.join(BASE_DIR, "templates")
 EXPORTS_DIR = os.path.join(BASE_DIR, "exports")
 DATABASE_DIR = os.path.join(BASE_DIR, "database")
+MEDIA_DIR = os.path.join(BASE_DIR, "static", "media")
 
 # Создаем все необходимые папки
 os.makedirs(SESSIONS_DIR, exist_ok=True)
@@ -28,6 +29,7 @@ os.makedirs(AVATAR_DIR, exist_ok=True)
 os.makedirs(TEMPLATES_DIR, exist_ok=True)
 os.makedirs(EXPORTS_DIR, exist_ok=True)
 os.makedirs(DATABASE_DIR, exist_ok=True)
+os.makedirs(MEDIA_DIR, exist_ok=True)
 
 # Создаем подпапки exports
 for folder in ["chats", "csv", "participants", "archives"]:
@@ -99,6 +101,67 @@ async def get_chat_creation_date(client, entity):
         return None
 
 
+def get_media_type(media):
+    """Определяет тип медиа"""
+    if hasattr(media, 'document'):
+        if hasattr(media.document, 'mime_type'):
+            mime = media.document.mime_type
+            if mime.startswith('image/'):
+                return "🖼️ Фото"
+            elif mime.startswith('video/'):
+                return "🎥 Видео"
+            elif mime.startswith('audio/'):
+                return "🎵 Аудио"
+        return "📎 Файл"
+    elif hasattr(media, 'photo'):
+        return "🖼️ Фото"
+    elif hasattr(media, 'webpage'):
+        return "🌐 Ссылка"
+    elif hasattr(media, 'sticker'):
+        return "😊 Стикер"
+    elif hasattr(media, 'contact'):
+        return "👤 Контакт"
+    elif hasattr(media, 'location'):
+        return "📍 Локация"
+    return "📎 Медиа"
+
+
+async def download_media(client, message, chat_id):
+    """Скачивает медиафайл и возвращает путь"""
+    if not message.media:
+        return None
+    
+    try:
+        # Создаем папку для медиа чата
+        chat_media_dir = os.path.join(MEDIA_DIR, str(chat_id))
+        os.makedirs(chat_media_dir, exist_ok=True)
+        
+        # Генерируем имя файла
+        file_ext = ".jpg"
+        if hasattr(message.media, 'document'):
+            if message.media.document.mime_type:
+                if 'image' in message.media.document.mime_type:
+                    file_ext = ".jpg"
+                elif 'video' in message.media.document.mime_type:
+                    file_ext = ".mp4"
+                elif 'audio' in message.media.document.mime_type:
+                    file_ext = ".mp3"
+                else:
+                    file_ext = ".file"
+        
+        filename = f"{message.id}{file_ext}"
+        file_path = os.path.join(chat_media_dir, filename)
+        
+        # Скачиваем файл если его нет
+        if not os.path.exists(file_path):
+            await client.download_media(message.media, file=file_path)
+        
+        return f"/static/media/{chat_id}/{filename}"
+    except Exception as e:
+        print(f"Ошибка загрузки медиа: {e}")
+        return None
+
+
 @app.get("/chats", response_class=HTMLResponse)
 async def get_chats(offset: int = Query(0, ge=0)):
     """Вывод чатов с аватарками и последними сообщениями"""
@@ -140,7 +203,7 @@ async def get_chats(offset: int = Query(0, ge=0)):
         else:
             media_type = getattr(dialog.message, "media", None)
             if media_type:
-                last_message = f"[Медиа]"
+                last_message = f"[{get_media_type(media_type)}]"
             else:
                 last_message = "(нет сообщений)"
 
@@ -174,7 +237,7 @@ async def get_chats(offset: int = Query(0, ge=0)):
                         <a class="btn-download" href="/download_chat/{entity.id}?format=html">📥 HTML</a>
                         <a class="btn-download" href="/download_chat/{entity.id}?format=txt">📄 TXT</a>
                         <a class="btn-download" href="/download_chat/{entity.id}?format=csv">📊 CSV</a>
-                        <a class="btn-view" href="/chat/{entity.id}?offset=0">👁️ Просмотр</a>
+                        <a class="btn-view" href="/chat/{entity.id}">👁️ Просмотр</a>
                     </div>
                 </div>
                 <div class="chat-meta">
@@ -204,7 +267,7 @@ async def get_chats(offset: int = Query(0, ge=0)):
 
 
 @app.get("/chat/{chat_id}")
-async def view_chat(chat_id: int, offset: int = Query(0, ge=0)):
+async def view_chat(chat_id: int, offset_id: int = Query(0, ge=0)):
     """Детальная страница чата с сообщениями"""
     if not clients:
         return HTMLResponse("<h3>Нет активной сессии</h3>")
@@ -219,8 +282,12 @@ async def view_chat(chat_id: int, offset: int = Query(0, ge=0)):
         
         # Получаем сообщения
         messages = []
-        async for message in client.iter_messages(entity, limit=limit, offset=offset):
+        async for message in client.iter_messages(entity, limit=limit, offset_id=offset_id):
             messages.append(message)
+        
+        # Находим ID для пагинации
+        next_offset_id = messages[-1].id - 1 if messages else 0
+        prev_offset_id = messages[0].id + limit if messages else 0
         
         messages_html = ""
         for message in messages:
@@ -237,10 +304,25 @@ async def view_chat(chat_id: int, offset: int = Query(0, ge=0)):
                 sender_type = "Входящее"
             
             # Обрабатываем контент сообщения
+            content = ""
             if message.text:
                 content = message.text
             elif message.media:
-                content = f"[Медиа: {type(message.media).__name__}]"
+                media_type = get_media_type(message.media)
+                media_url = await download_media(client, message, chat_id)
+                if media_url:
+                    if "Фото" in media_type:
+                        content = f'🖼️ <a href="{media_url}" target="_blank"><img src="{media_url}" class="media-preview" alt="Фото"></a>'
+                    elif "Видео" in media_type:
+                        content = f'🎥 <a href="{media_url}" target="_blank">Видео файл</a>'
+                    elif "Аудио" in media_type:
+                        content = f'🎵 <a href="{media_url}" target="_blank">Аудио файл</a>'
+                    elif "Стикер" in media_type:
+                        content = f'😊 <a href="{media_url}" target="_blank">Стикер</a>'
+                    else:
+                        content = f'📎 <a href="{media_url}" target="_blank">{media_type}</a>'
+                else:
+                    content = f"[{media_type}]"
             else:
                 content = "[Пустое сообщение]"
             
@@ -284,10 +366,11 @@ async def view_chat(chat_id: int, offset: int = Query(0, ge=0)):
         """
         
         # Навигация по сообщениям
-        if offset > 0:
-            html += f"<a class='btn' href='/chat/{chat_id}?offset={max(offset - limit, 0)}'>&laquo; Более старые</a>"
-        if len(messages) == limit:
-            html += f"<a class='btn' href='/chat/{chat_id}?offset={offset + limit}'>Более новые &raquo;</a>"
+        if messages:
+            html += f"<a class='btn' href='/chat/{chat_id}?offset_id={next_offset_id}'>⏩ Более старые</a>"
+        
+        if offset_id > 0:
+            html += f"<a class='btn' href='/chat/{chat_id}?offset_id={max(offset_id - limit * 2, 0)}'>⏪ Более новые</a>"
         
         html += "</div></body></html>"
         
@@ -360,7 +443,28 @@ async def generate_chat_html(client, entity, messages):
                 sender = f"ID {message.sender_id}"
                 sender_id = message.sender_id
         
-        content = message.text or "[Медиа]" if message.media else "[Пустое сообщение]"
+        # Обрабатываем контент с медиа
+        content = ""
+        if message.text:
+            content = message.text
+        elif message.media:
+            media_type = get_media_type(message.media)
+            media_url = await download_media(client, message, entity.id)
+            if media_url:
+                if "Фото" in media_type:
+                    content = f'🖼️ <img src="{media_url}" style="max-width: 300px;" alt="Фото">'
+                elif "Видео" in media_type:
+                    content = f'🎥 <a href="{media_url}">Видео файл</a>'
+                elif "Аудио" in media_type:
+                    content = f'🎵 <a href="{media_url}">Аудио файл</a>'
+                elif "Стикер" in media_type:
+                    content = f'😊 <a href="{media_url}">Стикер</a>'
+                else:
+                    content = f'📎 <a href="{media_url}">{media_type}</a>'
+            else:
+                content = f"[{media_type}]"
+        else:
+            content = "[Пустое сообщение]"
         
         messages_html += f"""
         <div class="message {'outgoing' if message.out else 'incoming'}">
@@ -387,6 +491,7 @@ async def generate_chat_html(client, entity, messages):
             .message-time {{ color: #666; font-size: 0.9em; }}
             .chat-header {{ background: #f8f9fa; padding: 20px; border-radius: 10px; margin-bottom: 20px; }}
             .stats {{ background: #e8f5e8; padding: 10px; border-radius: 5px; margin: 10px 0; }}
+            .media-preview {{ max-width: 300px; border-radius: 8px; margin: 5px 0; }}
         </style>
     </head>
     <body>
@@ -432,7 +537,14 @@ async def generate_chat_txt(client, entity, messages):
                 sender = f"ID {message.sender_id}"
                 sender_id = message.sender_id
         
-        message_text = message.text or "[Медиа]" if message.media else "[Пустое сообщение]"
+        # Обрабатываем медиа в TXT
+        if message.text:
+            message_text = message.text
+        elif message.media:
+            message_text = f"[{get_media_type(message.media)}]"
+        else:
+            message_text = "[Пустое сообщение]"
+            
         content += f"[{message.date.strftime('%d.%m.%Y %H:%M:%S')}] {sender} (ID:{sender_id}): {message_text}\n"
     
     return content
@@ -446,7 +558,7 @@ async def generate_chat_csv(client, entity, messages):
     writer = csv.writer(output)
     
     # Заголовки CSV
-    writer.writerow(['Дата', 'Тип', 'Отправитель', 'ID отправителя', 'Сообщение'])
+    writer.writerow(['Дата', 'Тип', 'Отправитель', 'ID отправителя', 'Тип контента', 'Сообщение'])
     
     for message in reversed(messages):
         if message.out:
@@ -463,21 +575,28 @@ async def generate_chat_csv(client, entity, messages):
                 sender = f"ID {message.sender_id}"
                 sender_id = message.sender_id
         
-        message_text = message.text or "[Медиа]" if message.media else "[Пустое сообщение]"
+        # Определяем тип контента
+        if message.text:
+            content_type = "Текст"
+            message_text = message.text
+        elif message.media:
+            content_type = get_media_type(message.media)
+            message_text = f"[{content_type}]"
+        else:
+            content_type = "Пустое"
+            message_text = "[Пустое сообщение]"
         
         writer.writerow([
             message.date.strftime('%d.%m.%Y %H:%M:%S'),
             message_type,
             sender,
             sender_id,
+            content_type,
             message_text
         ])
     
     return output.getvalue()
 
-
-# Остальные функции (export_all, export_chat_history, etc.) остаются без изменений
-# ... [остальной код из предыдущей версии] ...
 
 @app.get("/export_all")
 async def export_all():
@@ -542,7 +661,7 @@ async def export_chat_history(client, dialog):
     messages_csv = []
     participants = {}  # Используем словарь чтобы избежать дубликатов
     
-    async for message in client.iter_messages(entity, limit=200):  # увеличим лимит
+    async for message in client.iter_messages(entity, limit=200):
         msg_data = process_message(message)
         messages_html += msg_data['html']
         messages_csv.append(msg_data['csv'])
@@ -624,7 +743,7 @@ def process_message(message):
     if message.text:
         content = message.text
     elif message.media:
-        content = f"[Медиа: {type(message.media).__name__}]"
+        content = f"[{get_media_type(message.media)}]"
     else:
         content = "[Пустое сообщение]"
     
