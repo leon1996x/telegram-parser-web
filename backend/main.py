@@ -1,4 +1,17 @@
-from fastapi import FastAPI, Form, UploadFile, Query
+import sys
+import locale
+import urllib.parse
+
+# Принудительно устанавливаем UTF-8 кодировку
+if sys.platform.startswith("win"):
+    locale.setlocale(locale.LC_ALL, 'en_US.UTF-8')
+else:
+    locale.setlocale(locale.LC_ALL, 'C.UTF-8')
+
+sys.stdout.reconfigure(encoding='utf-8') if hasattr(sys.stdout, 'reconfigure') else None
+sys.stderr.reconfigure(encoding='utf-8') if hasattr(sys.stderr, 'reconfigure') else None
+
+from fastapi import FastAPI, Form, UploadFile, Query, Request
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from telethon import TelegramClient
@@ -38,53 +51,123 @@ for folder in ["chats", "csv", "participants", "archives"]:
 
 clients = {}
 
+# Middleware для принудительной UTF-8 кодировки
+@app.middleware("http")
+async def add_utf8_headers(request: Request, call_next):
+    response = await call_next(request)
+    # Добавляем UTF-8 заголовки ко всем ответам
+    if "content-type" in response.headers and "charset" not in response.headers["content-type"].lower():
+        if response.headers["content-type"].startswith("text/"):
+            response.headers["content-type"] = response.headers["content-type"] + "; charset=utf-8"
+    return response
+
+def safe_filename(filename):
+    """Создает безопасное имя файла без русских символов"""
+    if not filename:
+        return "chat"
+    
+    # Заменяем русские символы и специальные символы
+    replacements = {
+        'а': 'a', 'б': 'b', 'в': 'v', 'г': 'g', 'д': 'd', 'е': 'e', 'ё': 'e',
+        'ж': 'zh', 'з': 'z', 'и': 'i', 'й': 'y', 'к': 'k', 'л': 'l', 'м': 'm',
+        'н': 'n', 'о': 'o', 'п': 'p', 'р': 'r', 'с': 's', 'т': 't', 'у': 'u',
+        'ф': 'f', 'х': 'h', 'ц': 'ts', 'ч': 'ch', 'ш': 'sh', 'щ': 'sch',
+        'ъ': '', 'ы': 'y', 'ь': '', 'э': 'e', 'ю': 'yu', 'я': 'ya',
+        ' ': '_', '/': '_', '\\': '_', ':': '_', '*': '_', '?': '_', '"': '_',
+        '<': '_', '>': '_', '|': '_'
+    }
+    
+    filename = filename.lower()
+    for rus, eng in replacements.items():
+        filename = filename.replace(rus, eng)
+    
+    # Удаляем все остальные не-ASCII символы
+    filename = ''.join(c if c.isalnum() or c in '._-' else '_' for c in filename)
+    
+    # Убеждаемся что имя файла не слишком длинное
+    if len(filename) > 100:
+        name, ext = os.path.splitext(filename)
+        filename = name[:100-len(ext)] + ext
+    
+    return filename
+
+def safe_error_message(error):
+    """Создает безопасное сообщение об ошибке"""
+    try:
+        error_str = str(error)
+        # Пробуем разные кодировки
+        for encoding in ['utf-8', 'cp1251', 'latin-1']:
+            try:
+                return error_str.encode(encoding, errors='replace').decode(encoding)
+            except:
+                continue
+        # Если все кодировки не сработали, возвращаем базовое сообщение
+        return "Произошла ошибка при обработке данных"
+    except:
+        return "Неизвестная ошибка"
+
+@app.exception_handler(Exception)
+async def universal_exception_handler(request: Request, exc: Exception):
+    """Глобальный обработчик всех исключений"""
+    error_msg = safe_error_message(exc)
+    return HTMLResponse(
+        f'<div class="error">❌ Системная ошибка: {error_msg}</div>',
+        status_code=500,
+        headers={"Content-Type": "text/html; charset=utf-8"}
+    )
 
 @app.get("/", response_class=HTMLResponse)
 async def index():
-    with open(os.path.join(TEMPLATES_DIR, "index.html"), "r", encoding="utf-8") as f:
-        return HTMLResponse(f.read())
-
+    try:
+        with open(os.path.join(TEMPLATES_DIR, "index.html"), "r", encoding="utf-8") as f:
+            return HTMLResponse(f.read())
+    except Exception as e:
+        return HTMLResponse(f'<div class="error">❌ Ошибка: {safe_error_message(e)}</div>')
 
 @app.post("/login_file")
 async def login_file(session_file: UploadFile):
     """Авторизация через .session файл"""
-    path = os.path.join(SESSIONS_DIR, session_file.filename)
-    with open(path, "wb") as f:
-        shutil.copyfileobj(session_file.file, f)
+    try:
+        path = os.path.join(SESSIONS_DIR, session_file.filename)
+        with open(path, "wb") as f:
+            shutil.copyfileobj(session_file.file, f)
 
-    session_name = path.replace(".session", "")
-    dummy_id = 12345
-    dummy_hash = "0123456789abcdef0123456789abcdef"
+        session_name = path.replace(".session", "")
+        dummy_id = 12345
+        dummy_hash = "0123456789abcdef0123456789abcdef"
 
-    client = TelegramClient(session_name, dummy_id, dummy_hash)
-    await client.connect()
+        client = TelegramClient(session_name, dummy_id, dummy_hash)
+        await client.connect()
 
-    if not await client.is_user_authorized():
-        return HTMLResponse('<div class="error">❌ Сессия недействительна или устарела</div>')
+        if not await client.is_user_authorized():
+            return HTMLResponse('<div class="error">❌ Сессия недействительна или устарела</div>')
 
-    clients[session_file.filename] = client
-    return HTMLResponse('''
-        <div class="success">✅ Успешный вход!</div>
-        <a class="btn" href="/chats?offset=0">Показать чаты</a>
-    ''')
-
+        clients[session_file.filename] = client
+        return HTMLResponse('''
+            <div class="success">✅ Успешный вход!</div>
+            <a class="btn" href="/chats?offset=0">Показать чаты</a>
+        ''')
+    except Exception as e:
+        return HTMLResponse(f'<div class="error">❌ Ошибка: {safe_error_message(e)}</div>')
 
 @app.post("/login_manual")
 async def login_manual(api_id: int = Form(...), api_hash: str = Form(...)):
     """Авторизация вручную"""
-    session_path = os.path.join(SESSIONS_DIR, "manual_login")
-    client = TelegramClient(session_path, api_id, api_hash)
-    await client.connect()
+    try:
+        session_path = os.path.join(SESSIONS_DIR, "manual_login")
+        client = TelegramClient(session_path, api_id, api_hash)
+        await client.connect()
 
-    if not await client.is_user_authorized():
-        return HTMLResponse('<div class="error">❌ Требуется ввести код из Telegram</div>')
+        if not await client.is_user_authorized():
+            return HTMLResponse('<div class="error">❌ Требуется ввести код из Telegram</div>')
 
-    clients["manual_login"] = client
-    return HTMLResponse('''
-        <div class="success">✅ Вход выполнен вручную!</div>
-        <a class="btn" href="/chats?offset=0">Показать чаты</a>
-    ''')
-
+        clients["manual_login"] = client
+        return HTMLResponse('''
+            <div class="success">✅ Вход выполнен вручную!</div>
+            <a class="btn" href="/chats?offset=0">Показать чаты</a>
+        ''')
+    except Exception as e:
+        return HTMLResponse(f'<div class="error">❌ Ошибка: {safe_error_message(e)}</div>')
 
 async def get_chat_creation_date(client, entity):
     """Получает дату создания чата"""
@@ -100,7 +183,6 @@ async def get_chat_creation_date(client, entity):
         return None
     except:
         return None
-
 
 def get_media_type(media):
     """Определяет тип медиа"""
@@ -125,7 +207,6 @@ def get_media_type(media):
     elif hasattr(media, 'location'):
         return "📍 Локация"
     return "📎 Медиа"
-
 
 async def download_media(client, message, chat_id):
     """Скачивает медиафайл и возвращает путь с улучшенной обработкой"""
@@ -193,14 +274,13 @@ async def download_media(client, message, chat_id):
                 print(f"⏰ Таймаут при скачивании: {filename}")
                 return None
             except Exception as download_error:
-                print(f"❌ Ошибка скачивания {filename}: {download_error}")
+                print(f"❌ Ошибка скачивания {filename}: {safe_error_message(download_error)}")
                 return None
         
         return f"/static/media/{chat_id}/{filename}"
     except Exception as e:
-        print(f"❌ Ошибка загрузки медиа {message.id}: {e}")
+        print(f"❌ Ошибка загрузки медиа {message.id}: {safe_error_message(e)}")
         return None
-
 
 async def download_media_fast(client, message, chat_id):
     """Быстрое скачивание медиа с кэшированием"""
@@ -250,9 +330,8 @@ async def download_media_fast(client, message, chat_id):
             return None
         
     except Exception as e:
-        print(f"⚠️ Не удалось скачать медиа {message.id}: {e}")
+        print(f"⚠️ Не удалось скачать медиа {message.id}: {safe_error_message(e)}")
         return None
-
 
 @app.get("/chats", response_class=HTMLResponse)
 async def get_chats(offset: int = Query(0, ge=0)):
@@ -349,11 +428,10 @@ async def get_chats(offset: int = Query(0, ge=0)):
         html += f"<a class='btn' href='/chats?offset={offset + limit}'>Далее &raquo;</a>"
     html += "</div>"
 
-    html += '<div class="back"><a href="/">↩ На главную</a></div>'
+    html += '<div class="back"><a href="/">↩ Назад к чатам</a></div>'
     html += "</body></html>"
 
     return HTMLResponse(html)
-
 
 def create_download_buttons(chat_id, chat_title):
     """Создает умные кнопки скачивания с предустановленными периодами"""
@@ -430,7 +508,6 @@ def create_download_buttons(chat_id, chat_title):
     """
     
     return buttons_html
-
 
 @app.get("/chat/{chat_id}")
 async def view_chat(chat_id: int, offset_id: int = Query(0, ge=0)):
@@ -560,8 +637,7 @@ async def view_chat(chat_id: int, offset_id: int = Query(0, ge=0)):
         return HTMLResponse(html)
         
     except Exception as e:
-        return HTMLResponse(f'<div class="error">❌ Ошибка: {str(e)}</div>')
-
+        return HTMLResponse(f'<div class="error">❌ Ошибка: {safe_error_message(e)}</div>')
 
 @app.get("/download_period/{chat_id}")
 async def download_period(
@@ -579,29 +655,37 @@ async def download_period(
         entity = await client.get_entity(chat_id)
         chat_title = getattr(entity, 'title', 'Личная переписка')
         
+        # Создаем безопасное имя файла
+        safe_chat_title = safe_filename(chat_title)
+        if not safe_chat_title:
+            safe_chat_title = f"chat_{chat_id}"
+        
         # Определяем даты периода
         end_date = datetime.now()
         if days == "all":
             start_date = None
-            period_name = "вся история"
-            # Для всей истории используем лимит
+            period_name = "all_history"
+            period_display = "вся история"
             limit = 5000
         elif days == "month":
             start_date = datetime(end_date.year, end_date.month, 1)
-            period_name = f"месяц {end_date.strftime('%B %Y')}"
+            period_name = f"month_{end_date.strftime('%Y_%m')}"
+            period_display = f"месяц {end_date.strftime('%B %Y')}"
             limit = 2000
         elif days == "last_month":
             last_month = end_date.replace(day=1) - timedelta(days=1)
             start_date = datetime(last_month.year, last_month.month, 1)
             end_date = datetime(last_month.year, last_month.month, last_month.day, 23, 59, 59)
-            period_name = f"месяц {last_month.strftime('%B %Y')}"
+            period_name = f"month_{last_month.strftime('%Y_%m')}"
+            period_display = f"месяц {last_month.strftime('%B %Y')}"
             limit = 2000
         else:
             start_date = end_date - timedelta(days=int(days))
-            period_name = f"последние {days} дней"
+            period_name = f"last_{days}_days"
+            period_display = f"последние {days} дней"
             limit = 1000
         
-        print(f"🔍 Поиск сообщений за период: {period_name}")
+        print(f"🔍 Поиск сообщений за период: {period_display}")
         
         # Собираем сообщения за период ОПТИМИЗИРОВАННО
         messages = []
@@ -644,29 +728,31 @@ async def download_period(
         
         # Генерируем контент
         if format == "html":
-            content = await generate_chat_html_with_media(client, entity, messages, media_files, period_name)
-            filename = f"{chat_title}_{period_name.replace(' ', '_')}.html"
-            media_type = "text/html"
+            content = await generate_chat_html_with_media(client, entity, messages, media_files, period_display)
+            filename = f"{safe_chat_title}_{period_name}.html"
+            media_type = "text/html; charset=utf-8"
         elif format == "txt":
-            content = await generate_chat_txt_with_media(client, entity, messages, media_files, period_name)
-            filename = f"{chat_title}_{period_name.replace(' ', '_')}.txt"
-            media_type = "text/plain"
+            content = await generate_chat_txt_with_media(client, entity, messages, media_files, period_display)
+            filename = f"{safe_chat_title}_{period_name}.txt"
+            media_type = "text/plain; charset=utf-8"
         else:  # csv
-            content = await generate_chat_csv_with_media(client, entity, messages, media_files, period_name)
-            filename = f"{chat_title}_{period_name.replace(' ', '_')}.csv"
-            media_type = "text/csv"
+            content = await generate_chat_csv_with_media(client, entity, messages, media_files, period_display)
+            filename = f"{safe_chat_title}_{period_name}.csv"
+            media_type = "text/csv; charset=utf-8"
+        
+        # Кодируем имя файла для безопасной загрузки
+        encoded_filename = urllib.parse.quote(filename)
         
         return HTMLResponse(
             content,
             headers={
-                "Content-Disposition": f"attachment; filename={filename}",
+                "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}",
                 "Content-Type": media_type
             }
         )
         
     except Exception as e:
-        return HTMLResponse(f'<div class="error">❌ Ошибка: {str(e)}</div>')
-
+        return HTMLResponse(f'<div class="error">❌ Ошибка: {safe_error_message(e)}</div>')
 
 @app.get("/download_period_fast/{chat_id}")
 async def download_period_fast(
@@ -684,28 +770,37 @@ async def download_period_fast(
         entity = await client.get_entity(chat_id)
         chat_title = getattr(entity, 'title', 'Личная переписка')
         
+        # Создаем безопасное имя файла
+        safe_chat_title = safe_filename(chat_title)
+        if not safe_chat_title:
+            safe_chat_title = f"chat_{chat_id}"
+        
         # Определяем даты периода
         end_date = datetime.now()
         if days == "all":
             start_date = None
-            period_name = "вся история"
+            period_name = "all_history"
+            period_display = "вся история"
             limit = 10000
         elif days == "month":
             start_date = datetime(end_date.year, end_date.month, 1)
-            period_name = f"месяц {end_date.strftime('%B %Y')}"
+            period_name = f"month_{end_date.strftime('%Y_%m')}"
+            period_display = f"месяц {end_date.strftime('%B %Y')}"
             limit = 5000
         elif days == "last_month":
             last_month = end_date.replace(day=1) - timedelta(days=1)
             start_date = datetime(last_month.year, last_month.month, 1)
             end_date = datetime(last_month.year, last_month.month, last_month.day, 23, 59, 59)
-            period_name = f"месяц {last_month.strftime('%B %Y')}"
+            period_name = f"month_{last_month.strftime('%Y_%m')}"
+            period_display = f"месяц {last_month.strftime('%B %Y')}"
             limit = 5000
         else:
             start_date = end_date - timedelta(days=int(days))
-            period_name = f"последние {days} дней"
+            period_name = f"last_{days}_days"
+            period_display = f"последние {days} дней"
             limit = 2000
         
-        print(f"⚡ Быстрый поиск сообщений: {period_name}")
+        print(f"⚡ Быстрый поиск сообщений: {period_display}")
         
         # БЫСТРЫЙ сбор только сообщений
         messages = []
@@ -728,29 +823,31 @@ async def download_period_fast(
         
         # Генерируем контент БЕЗ медиа
         if format == "html":
-            content = await generate_chat_html_with_media(client, entity, messages, [], period_name)
-            filename = f"{chat_title}_{period_name.replace(' ', '_')}_NO_MEDIA.html"
-            media_type = "text/html"
+            content = await generate_chat_html_with_media(client, entity, messages, [], period_display)
+            filename = f"{safe_chat_title}_{period_name}_NO_MEDIA.html"
+            media_type = "text/html; charset=utf-8"
         elif format == "txt":
-            content = await generate_chat_txt_with_media(client, entity, messages, [], period_name)
-            filename = f"{chat_title}_{period_name.replace(' ', '_')}_NO_MEDIA.txt"
-            media_type = "text/plain"
+            content = await generate_chat_txt_with_media(client, entity, messages, [], period_display)
+            filename = f"{safe_chat_title}_{period_name}_NO_MEDIA.txt"
+            media_type = "text/plain; charset=utf-8"
         else:  # csv
-            content = await generate_chat_csv_with_media(client, entity, messages, [], period_name)
-            filename = f"{chat_title}_{period_name.replace(' ', '_')}_NO_MEDIA.csv"
-            media_type = "text/csv"
+            content = await generate_chat_csv_with_media(client, entity, messages, [], period_display)
+            filename = f"{safe_chat_title}_{period_name}_NO_MEDIA.csv"
+            media_type = "text/csv; charset=utf-8"
+        
+        # Кодируем имя файла для безопасной загрузки
+        encoded_filename = urllib.parse.quote(filename)
         
         return HTMLResponse(
             content,
             headers={
-                "Content-Disposition": f"attachment; filename={filename}",
+                "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}",
                 "Content-Type": media_type
             }
         )
         
     except Exception as e:
-        return HTMLResponse(f'<div class="error">❌ Ошибка: {str(e)}</div>')
-
+        return HTMLResponse(f'<div class="error">❌ Ошибка: {safe_error_message(e)}</div>')
 
 @app.get("/download_custom_period/{chat_id}")
 async def download_custom_period(
@@ -769,11 +866,17 @@ async def download_custom_period(
         entity = await client.get_entity(chat_id)
         chat_title = getattr(entity, 'title', 'Личная переписка')
         
+        # Создаем безопасное имя файла
+        safe_chat_title = safe_filename(chat_title)
+        if not safe_chat_title:
+            safe_chat_title = f"chat_{chat_id}"
+        
         # Парсим даты (без временных зон)
         start_dt = datetime.strptime(start_date, "%Y-%m-%d")
         end_dt = datetime.strptime(end_date, "%Y-%m-%d").replace(hour=23, minute=59, second=59)
         
-        period_name = f"с {start_dt.strftime('%d.%m.%Y')} по {end_dt.strftime('%d.%m.%Y')}"
+        period_name = f"{start_date}_to_{end_date}"
+        period_display = f"с {start_dt.strftime('%d.%m.%Y')} по {end_dt.strftime('%d.%m.%Y')}"
         
         # Собираем сообщения и медиа
         messages = []
@@ -802,29 +905,31 @@ async def download_custom_period(
         
         # Генерируем файл
         if format == "html":
-            content = await generate_chat_html_with_media(client, entity, messages, media_files, period_name)
-            filename = f"{chat_title}_{start_date}_to_{end_date}.html"
-            media_type = "text/html"
+            content = await generate_chat_html_with_media(client, entity, messages, media_files, period_display)
+            filename = f"{safe_chat_title}_{period_name}.html"
+            media_type = "text/html; charset=utf-8"
         elif format == "txt":
-            content = await generate_chat_txt_with_media(client, entity, messages, media_files, period_name)
-            filename = f"{chat_title}_{start_date}_to_{end_date}.txt"
-            media_type = "text/plain"
+            content = await generate_chat_txt_with_media(client, entity, messages, media_files, period_display)
+            filename = f"{safe_chat_title}_{period_name}.txt"
+            media_type = "text/plain; charset=utf-8"
         else:  # csv
-            content = await generate_chat_csv_with_media(client, entity, messages, media_files, period_name)
-            filename = f"{chat_title}_{start_date}_to_{end_date}.csv"
-            media_type = "text/csv"
+            content = await generate_chat_csv_with_media(client, entity, messages, media_files, period_display)
+            filename = f"{safe_chat_title}_{period_name}.csv"
+            media_type = "text/csv; charset=utf-8"
+        
+        # Кодируем имя файла для безопасной загрузки
+        encoded_filename = urllib.parse.quote(filename)
         
         return HTMLResponse(
             content,
             headers={
-                "Content-Disposition": f"attachment; filename={filename}",
+                "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}",
                 "Content-Type": media_type
             }
         )
         
     except Exception as e:
-        return HTMLResponse(f'<div class="error">❌ Ошибка: {str(e)}</div>')
-
+        return HTMLResponse(f'<div class="error">❌ Ошибка: {safe_error_message(e)}</div>')
 
 async def generate_chat_html_with_media(client, entity, messages, media_files, period_name):
     """Генерирует HTML с встроенными медиафайлами"""
@@ -841,7 +946,9 @@ async def generate_chat_html_with_media(client, entity, messages, media_files, p
         else:
             sender_obj = message.sender
             if sender_obj:
-                sender = f"@{sender_obj.username}" if sender_obj.username else f"ID {sender_obj.id}"
+                # Безопасное экранирование текста
+                username = f"@{sender_obj.username}" if sender_obj.username else ""
+                sender = f"{username} (ID {sender_obj.id})"
                 sender_id = sender_obj.id
             else:
                 sender = f"ID {message.sender_id}"
@@ -850,7 +957,8 @@ async def generate_chat_html_with_media(client, entity, messages, media_files, p
         # Обрабатываем контент с медиа
         content = ""
         if message.text:
-            content = message.text
+            # Экранируем HTML символы в тексте
+            content = message.text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
         
         # Добавляем медиа если есть
         if message.id in media_map:
@@ -870,14 +978,14 @@ async def generate_chat_html_with_media(client, entity, messages, media_files, p
         messages_html += f"""
         <div class="message {'outgoing' if message.out else 'incoming'}">
             <div class="message-header">
-                <strong>{sender} (ID: {sender_id})</strong>
+                <strong>{sender}</strong>
                 <span class="message-time">{message.date.strftime('%d.%m.%Y %H:%M:%S')}</span>
             </div>
             <div class="message-content">{content}</div>
         </div>
         """
     
-    return f"""
+    html_content = f"""
     <!DOCTYPE html>
     <html>
     <head>
@@ -912,7 +1020,8 @@ async def generate_chat_html_with_media(client, entity, messages, media_files, p
     </body>
     </html>
     """
-
+    
+    return html_content
 
 async def generate_chat_txt_with_media(client, entity, messages, media_files, period_name):
     """Генерирует TXT файл с информацией о медиа"""
@@ -932,7 +1041,8 @@ async def generate_chat_txt_with_media(client, entity, messages, media_files, pe
         else:
             sender_obj = message.sender
             if sender_obj:
-                sender = f"@{sender_obj.username}" if sender_obj.username else f"ID {sender_obj.id}"
+                username = f"@{sender_obj.username}" if sender_obj.username else ""
+                sender = f"{username} (ID {sender_obj.id})"
                 sender_id = sender_obj.id
             else:
                 sender = f"ID {message.sender_id}"
@@ -949,10 +1059,9 @@ async def generate_chat_txt_with_media(client, entity, messages, media_files, pe
             media_info = next(m for m in media_files if m['message_id'] == message.id)
             message_text += f" [{media_info['media_type']}]"
             
-        content += f"[{message.date.strftime('%d.%m.%Y %H:%M:%S')}] {sender} (ID:{sender_id}): {message_text}\n"
+        content += f"[{message.date.strftime('%d.%m.%Y %H:%M:%S')}] {sender}: {message_text}\n"
     
     return content
-
 
 async def generate_chat_csv_with_media(client, entity, messages, media_files, period_name):
     """Генерирует CSV файл с информацией о медиа"""
@@ -1010,28 +1119,23 @@ async def generate_chat_csv_with_media(client, entity, messages, media_files, pe
     
     return output.getvalue()
 
-
 # Старые функции для обратной совместимости
 @app.get("/download_chat/{chat_id}")
 async def download_chat(chat_id: int, format: str = "html"):
     """Скачать всю историю чата (для обратной совместимости)"""
     return await download_period(chat_id, "all", format)
 
-
 async def generate_chat_html(client, entity, messages):
     """Старая функция для обратной совместимости"""
     return await generate_chat_html_with_media(client, entity, messages, [], "вся история")
-
 
 async def generate_chat_txt(client, entity, messages):
     """Старая функция для обратной совместимости"""
     return await generate_chat_txt_with_media(client, entity, messages, [], "вся история")
 
-
 async def generate_chat_csv(client, entity, messages):
     """Старая функция для обратной совместимости"""
     return await generate_chat_csv_with_media(client, entity, messages, [], "вся история")
-
 
 # Остальной код остается без изменений
 @app.get("/export_all")
@@ -1061,10 +1165,11 @@ async def export_all():
             results.append(chat_data)
             total_messages += chat_data['messages_count']
         except Exception as e:
-            print(f"Ошибка экспорта чата {dialog.name}: {e}")
+            print(f"Ошибка экспорта чата {dialog.name}: {safe_error_message(e)}")
     
     # Создаем ZIP архив
-    zip_path = os.path.join(EXPORTS_DIR, "archives", f"export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip")
+    zip_filename = f"export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
+    zip_path = os.path.join(EXPORTS_DIR, "archives", zip_filename)
     create_zip_archive(zip_path)
     
     return HTMLResponse(f'''
@@ -1076,7 +1181,6 @@ async def export_all():
         </div>
         <a class="btn" href="/chats">← Назад к чатам</a>
     ''')
-
 
 async def export_chat_history(client, dialog):
     """Экспорт истории конкретного чата"""
@@ -1130,27 +1234,45 @@ async def export_chat_history(client, dialog):
                     }
             participants_list = list(participants.values())
         except Exception as e:
-            print(f"Не удалось получить участников чата {chat_title}: {e}")
+            print(f"Не удалось получить участников чата {chat_title}: {safe_error_message(e)}")
             # Продолжаем с участниками из сообщений
     
-    # Сохраняем HTML файл
+    # Сохраняем HTML файл с правильной кодировкой
     html_content = create_chat_html(chat_info, participants_list, messages_html, len(messages_csv))
-    with open(os.path.join(EXPORTS_DIR, "chats", f"chat_{chat_id}.html"), "w", encoding="utf-8") as f:
-        f.write(html_content)
+    html_path = os.path.join(EXPORTS_DIR, "chats", f"chat_{chat_id}.html")
+    try:
+        with open(html_path, "w", encoding="utf-8") as f:
+            f.write(html_content)
+    except Exception as e:
+        print(f"❌ Ошибка записи HTML файла: {safe_error_message(e)}")
+        # Пробуем альтернативный способ
+        try:
+            with open(html_path, "wb") as f:
+                f.write(html_content.encode('utf-8'))
+        except Exception as e2:
+            print(f"❌ Критическая ошибка записи HTML: {safe_error_message(e2)}")
     
-    # Сохраняем CSV
-    with open(os.path.join(EXPORTS_DIR, "csv", f"chat_{chat_id}.csv"), "w", newline='', encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow(['date', 'sender_id', 'sender_username', 'message_type', 'content'])
-        writer.writerows(messages_csv)
+    # Сохраняем CSV с правильной кодировкой
+    csv_path = os.path.join(EXPORTS_DIR, "csv", f"chat_{chat_id}.csv")
+    try:
+        with open(csv_path, "w", newline='', encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerow(['date', 'sender_id', 'sender_username', 'message_type', 'content'])
+            writer.writerows(messages_csv)
+    except Exception as e:
+        print(f"❌ Ошибка записи CSV файла: {safe_error_message(e)}")
     
-    # Сохраняем участников
-    with open(os.path.join(EXPORTS_DIR, "participants", f"chat_{chat_id}.json"), "w", encoding="utf-8") as f:
-        json.dump({
-            'chat_info': chat_info,
-            'participants': participants_list,
-            'participants_source': 'from_messages' if len(participants_list) > 0 else 'unknown'
-        }, f, ensure_ascii=False, indent=2)
+    # Сохраняем участников с правильной кодировкой
+    json_path = os.path.join(EXPORTS_DIR, "participants", f"chat_{chat_id}.json")
+    try:
+        with open(json_path, "w", encoding="utf-8") as f:
+            json.dump({
+                'chat_info': chat_info,
+                'participants': participants_list,
+                'participants_source': 'from_messages' if len(participants_list) > 0 else 'unknown'
+            }, f, ensure_ascii=False, indent=2)
+    except Exception as e:
+        print(f"❌ Ошибка записи JSON файла: {safe_error_message(e)}")
     
     return {
         'id': chat_id,
@@ -1158,7 +1280,6 @@ async def export_chat_history(client, dialog):
         'messages_count': len(messages_csv),
         'participants_count': len(participants_list)
     }
-
 
 def process_message(message):
     """Обработка одного сообщения для HTML и CSV"""
@@ -1204,7 +1325,6 @@ def process_message(message):
     ]
     
     return {'html': html, 'csv': csv_row}
-
 
 def create_chat_html(chat_info, participants, messages_html, total_messages):
     """Создает HTML файл с историей чата"""
@@ -1257,7 +1377,6 @@ def create_chat_html(chat_info, participants, messages_html, total_messages):
     </html>
     """
 
-
 def create_zip_archive(zip_path):
     """Создает ZIP архив со всеми экспортированными файлами"""
     with zipfile.ZipFile(zip_path, 'w') as zipf:
@@ -1267,7 +1386,6 @@ def create_zip_archive(zip_path):
                 file_path = os.path.join(folder_path, filename)
                 if os.path.isfile(file_path):
                     zipf.write(file_path, f"{folder}/{filename}")
-
 
 @app.get("/download_export")
 async def download_export():
@@ -1284,8 +1402,14 @@ async def download_export():
     latest_archive = sorted(archives)[-1]  # последний по времени
     archive_path = os.path.join(archives_dir, latest_archive)
     
+    # Кодируем имя файла для безопасной загрузки
+    encoded_filename = urllib.parse.quote(latest_archive)
+    
     return FileResponse(
         archive_path,
         filename=f"telegram_export_{datetime.now().strftime('%Y%m%d')}.zip",
-        media_type='application/zip'
+        media_type='application/zip',
+        headers={
+            "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"
+        }
     )
