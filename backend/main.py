@@ -333,7 +333,7 @@ async def download_media_fast(client, message, chat_id):
         print(f"⚠️ Не удалось скачать медиа {message.id}: {safe_error_message(e)}")
         return None
 
-async def get_chat_participants(client, entity, limit=1000):
+async def get_chat_participants(client, entity, limit=10000):
     """Получает список участников чата, если доступно, иначе из сообщений"""
     participants = {}
     
@@ -342,7 +342,7 @@ async def get_chat_participants(client, entity, limit=1000):
         if hasattr(entity, 'participants_count'):
             print(f"🔍 Получение списка участников для {getattr(entity, 'title', 'чата')}...")
             try:
-                async for user in client.iter_participants(entity, limit=200):
+                async for user in client.iter_participants(entity, limit=1000):
                     participants[user.id] = {
                         'id': user.id,
                         'username': user.username or '',
@@ -360,24 +360,44 @@ async def get_chat_participants(client, entity, limit=1000):
     except Exception as e:
         print(f"⚠️ Ошибка при проверке участников: {safe_error_message(e)}")
     
-    # Если не удалось получить список участников, собираем из сообщений
-    print(f"🔍 Сбор участников из истории сообщений для {getattr(entity, 'title', 'чата')}...")
+    # Если не удалось получить список участников, собираем из ВСЕХ сообщений
+    print(f"🔍 Сбор участников из ВСЕЙ истории сообщений для {getattr(entity, 'title', 'чата')}...")
     message_count = 0
+    
+    # УБИРАЕМ ЛИМИТ или ставим ОЧЕНЬ БОЛЬШОЙ - собираем ВСЕХ участников
     async for message in client.iter_messages(entity, limit=limit):
-        if message.sender:
-            sender_id = message.sender.id
+        message_count += 1
+        
+        # ПРОСТОЙ И НАДЕЖНЫЙ СПОСОБ - используем sender_id который ВСЕГДА есть
+        if hasattr(message, 'sender_id') and message.sender_id:
+            sender_id = message.sender_id
+            
             if sender_id not in participants:
+                # Базовые данные
+                username = ""
+                first_name = ""
+                last_name = ""
+                phone = ""
+                
+                # Пытаемся получить дополнительные данные если sender доступен
+                if message.sender:
+                    username = getattr(message.sender, 'username', '') or ""
+                    first_name = getattr(message.sender, 'first_name', '') or ""
+                    last_name = getattr(message.sender, 'last_name', '') or ""
+                    phone = getattr(message.sender, 'phone', '') or ""
+                
                 participants[sender_id] = {
                     'id': sender_id,
-                    'username': getattr(message.sender, 'username', ''),
-                    'first_name': getattr(message.sender, 'first_name', ''),
-                    'last_name': getattr(message.sender, 'last_name', ''),
-                    'phone': getattr(message.sender, 'phone', ''),
+                    'username': username,
+                    'first_name': first_name,
+                    'last_name': last_name,
+                    'phone': phone,
                     'source': 'from_messages'
                 }
-        message_count += 1
-        if message_count >= limit:
-            break
+        
+        # Прогресс каждые 500 сообщений
+        if message_count % 500 == 0:
+            print(f"📨 Обработано {message_count} сообщений, найдено {len(participants)} участников")
     
     print(f"✅ Собрано {len(participants)} участников из {message_count} сообщений")
     return participants
@@ -475,6 +495,7 @@ async def get_chats(offset: int = Query(0, ge=0)):
                     <div class="chat-title">{title}</div>
                     <div class="chat-actions">
                         <a class="btn-view" href="/chat/{entity.id}">👁️ Просмотр</a>
+                        <a class="btn-download" href="/download_participants/{entity.id}?format=html">👥 Участники</a>
                     </div>
                 </div>
                 <div class="chat-meta">
@@ -605,8 +626,8 @@ async def view_chat(chat_id: int, offset_id: int = Query(0, ge=0)):
         creation_date = await get_chat_creation_date(client, entity)
         chat_link = get_chat_link(entity)
         
-        # Получаем участников
-        participants = await get_chat_participants(client, entity, limit=100)
+        # Получаем участников - ТЕПЕРЬ С БОЛЬШИМ ЛИМИТОМ
+        participants = await get_chat_participants(client, entity, limit=10000)
         participants_count = len(participants)
         
         # Получаем сообщения
@@ -756,8 +777,8 @@ async def download_participants(chat_id: int, format: str = "html"):
         chat_title = getattr(entity, 'title', 'Личная переписка')
         chat_link = get_chat_link(entity)
         
-        # Получаем участников
-        participants = await get_chat_participants(client, entity, limit=500)
+        # Получаем участников - ТЕПЕРЬ С БОЛЬШИМ ЛИМИТОМ
+        participants = await get_chat_participants(client, entity, limit=20000)
         
         # Создаем безопасное имя файла
         safe_chat_title = safe_filename(chat_title) or f"chat_{chat_id}"
