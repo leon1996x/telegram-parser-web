@@ -4,7 +4,7 @@ from fastapi.staticfiles import StaticFiles
 from telethon import TelegramClient
 import os
 import shutil
-from datetime import datetime
+from datetime import datetime, timedelta
 import csv
 import json
 import zipfile
@@ -234,9 +234,6 @@ async def get_chats(offset: int = Query(0, ge=0)):
                 <div class="chat-title-row">
                     <div class="chat-title">{title}</div>
                     <div class="chat-actions">
-                        <a class="btn-download" href="/download_chat/{entity.id}?format=html">📥 HTML</a>
-                        <a class="btn-download" href="/download_chat/{entity.id}?format=txt">📄 TXT</a>
-                        <a class="btn-download" href="/download_chat/{entity.id}?format=csv">📊 CSV</a>
                         <a class="btn-view" href="/chat/{entity.id}">👁️ Просмотр</a>
                     </div>
                 </div>
@@ -266,9 +263,49 @@ async def get_chats(offset: int = Query(0, ge=0)):
     return HTMLResponse(html)
 
 
+def create_download_buttons(chat_id, chat_title):
+    """Создает умные кнопки скачивания с предустановленными периодами"""
+    
+    today = datetime.now()
+    periods = [
+        {"name": "📅 Последние 7 дней", "days": 7},
+        {"name": "📅 Последние 30 дней", "days": 30},
+        {"name": "📅 Последние 90 дней", "days": 90},
+        {"name": "📅 Этот месяц", "days": "month"},
+        {"name": "📅 Прошлый месяц", "days": "last_month"},
+        {"name": "🚀 ВСЯ ИСТОРИЯ", "days": "all"}
+    ]
+    
+    buttons_html = """
+    <div class="download-section">
+        <h3>📥 Скачать историю с медиафайлами:</h3>
+        <div class="period-buttons">
+    """
+    
+    for period in periods:
+        buttons_html += f"""
+            <div class="period-group">
+                <div class="period-name">{period['name']}</div>
+                <div class="format-buttons">
+                    <a class="btn-download small" href="/download_period/{chat_id}?days={period['days']}&format=html">HTML</a>
+                    <a class="btn-download small" href="/download_period/{chat_id}?days={period['days']}&format=txt">TXT</a>
+                    <a class="btn-download small" href="/download_period/{chat_id}?days={period['days']}&format=csv">CSV</a>
+                </div>
+            </div>
+        """
+    
+    buttons_html += """
+        </div>
+        <p class="note">💡 Все фото и видео будут встроены в HTML файл</p>
+    </div>
+    """
+    
+    return buttons_html
+
+
 @app.get("/chat/{chat_id}")
 async def view_chat(chat_id: int, offset_id: int = Query(0, ge=0)):
-    """Детальная страница чата с сообщениями"""
+    """Детальная страница чата с УМНЫМИ кнопками скачивания"""
     if not clients:
         return HTMLResponse("<h3>Нет активной сессии</h3>")
 
@@ -336,6 +373,9 @@ async def view_chat(chat_id: int, offset_id: int = Query(0, ge=0)):
             </div>
             """
 
+        # 📅 УМНЫЕ КНОПКИ СКАЧИВАНИЯ С ПЕРИОДАМИ
+        download_buttons = create_download_buttons(chat_id, chat_title)
+        
         html = f"""
         <html>
         <head>
@@ -350,12 +390,27 @@ async def view_chat(chat_id: int, offset_id: int = Query(0, ge=0)):
                     <span>🆔 ID: {chat_id}</span>
                     <span>💬 Сообщений: {len(messages)}</span>
                 </div>
-                <div class="chat-actions-bar">
-                    <a class="btn-download" href="/download_chat/{chat_id}?format=html">📥 HTML</a>
-                    <a class="btn-download" href="/download_chat/{chat_id}?format=txt">📄 TXT</a>
-                    <a class="btn-download" href="/download_chat/{chat_id}?format=csv">📊 CSV</a>
-                    <a class="btn" href="/chats">← Назад к чатам</a>
+                
+                {download_buttons}
+                
+                <div class="custom-period">
+                    <h4>📅 Или укажите свой период:</h4>
+                    <form action="/download_custom_period/{chat_id}" method="get" class="period-form">
+                        <div class="date-inputs">
+                            <label>С:</label>
+                            <input type="date" name="start_date" required>
+                            <label>По:</label>
+                            <input type="date" name="end_date" required>
+                        </div>
+                        <div class="format-buttons">
+                            <button type="submit" name="format" value="html" class="btn-download">📥 HTML</button>
+                            <button type="submit" name="format" value="txt" class="btn-download">📄 TXT</button>
+                            <button type="submit" name="format" value="csv" class="btn-download">📊 CSV</button>
+                        </div>
+                    </form>
                 </div>
+                
+                <a class="btn" href="/chats">← Назад к чатам</a>
             </div>
             
             <div class="messages-container">
@@ -365,7 +420,6 @@ async def view_chat(chat_id: int, offset_id: int = Query(0, ge=0)):
             <div class="pagination">
         """
         
-        # Навигация по сообщениям
         if messages:
             html += f"<a class='btn' href='/chat/{chat_id}?offset_id={next_offset_id}'>⏩ Более старые</a>"
         
@@ -380,36 +434,73 @@ async def view_chat(chat_id: int, offset_id: int = Query(0, ge=0)):
         return HTMLResponse(f'<div class="error">❌ Ошибка: {str(e)}</div>')
 
 
-@app.get("/download_chat/{chat_id}")
-async def download_chat(chat_id: int, format: str = "html"):
-    """Скачать историю одного чата в выбранном формате"""
+@app.get("/download_period/{chat_id}")
+async def download_period(
+    chat_id: int,
+    days: str = Query(...),
+    format: str = "html"
+):
+    """Скачать историю за определенный период с медиафайлами"""
     if not clients:
         return HTMLResponse("<h3>Нет активной сессии</h3>")
 
     client = list(clients.values())[0]
     
     try:
-        # Получаем информацию о чате
         entity = await client.get_entity(chat_id)
         chat_title = getattr(entity, 'title', 'Личная переписка')
-        safe_title = "".join(c for c in chat_title if c.isalnum() or c in (' ', '-', '_')).rstrip()
         
-        # Собираем все сообщения
+        # Определяем даты периода
+        end_date = datetime.now()
+        if days == "all":
+            start_date = None  # Вся история
+            period_name = "вся история"
+        elif days == "month":
+            start_date = datetime(end_date.year, end_date.month, 1)
+            period_name = f"месяц {end_date.strftime('%B %Y')}"
+        elif days == "last_month":
+            last_month = end_date.replace(day=1) - timedelta(days=1)
+            start_date = datetime(last_month.year, last_month.month, 1)
+            end_date = datetime(last_month.year, last_month.month, last_month.day, 23, 59, 59)
+            period_name = f"месяц {last_month.strftime('%B %Y')}"
+        else:
+            start_date = end_date - timedelta(days=int(days))
+            period_name = f"последние {days} дней"
+        
+        # Собираем сообщения за период
         messages = []
-        async for message in client.iter_messages(entity, limit=10000):
-            messages.append(message)
+        media_files = []
         
+        async for message in client.iter_messages(entity, offset_date=end_date):
+            if start_date and message.date < start_date:
+                break
+                
+            messages.append(message)
+            
+            # Собираем медиафайлы
+            if message.media:
+                media_path = await download_media(client, message, chat_id)
+                if media_path:
+                    media_files.append({
+                        'message_id': message.id,
+                        'file_path': media_path,
+                        'media_type': get_media_type(message.media)
+                    })
+        
+        print(f"📥 Собрано {len(messages)} сообщений и {len(media_files)} медиафайлов")
+        
+        # Генерируем контент
         if format == "html":
-            content = await generate_chat_html(client, entity, messages)
-            filename = f"{safe_title}_{chat_id}.html"
+            content = await generate_chat_html_with_media(client, entity, messages, media_files, period_name)
+            filename = f"{chat_title}_{period_name.replace(' ', '_')}.html"
             media_type = "text/html"
         elif format == "txt":
-            content = await generate_chat_txt(client, entity, messages)
-            filename = f"{safe_title}_{chat_id}.txt"
+            content = await generate_chat_txt_with_media(client, entity, messages, media_files, period_name)
+            filename = f"{chat_title}_{period_name.replace(' ', '_')}.txt"
             media_type = "text/plain"
         else:  # csv
-            content = await generate_chat_csv(client, entity, messages)
-            filename = f"{safe_title}_{chat_id}.csv"
+            content = await generate_chat_csv_with_media(client, entity, messages, media_files, period_name)
+            filename = f"{chat_title}_{period_name.replace(' ', '_')}.csv"
             media_type = "text/csv"
         
         return HTMLResponse(
@@ -424,13 +515,83 @@ async def download_chat(chat_id: int, format: str = "html"):
         return HTMLResponse(f'<div class="error">❌ Ошибка: {str(e)}</div>')
 
 
-async def generate_chat_html(client, entity, messages):
-    """Генерирует HTML файл для одного чата"""
+@app.get("/download_custom_period/{chat_id}")
+async def download_custom_period(
+    chat_id: int,
+    start_date: str = Query(...),
+    end_date: str = Query(...),
+    format: str = "html"
+):
+    """Скачать историю за кастомный период"""
+    if not clients:
+        return HTMLResponse("<h3>Нет активной сессии</h3>")
+
+    client = list(clients.values())[0]
+    
+    try:
+        entity = await client.get_entity(chat_id)
+        chat_title = getattr(entity, 'title', 'Личная переписка')
+        
+        # Парсим даты
+        start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+        end_dt = datetime.strptime(end_date, "%Y-%m-%d").replace(hour=23, minute=59, second=59)
+        
+        period_name = f"с {start_dt.strftime('%d.%m.%Y')} по {end_dt.strftime('%d.%m.%Y')}"
+        
+        # Собираем сообщения и медиа
+        messages = []
+        media_files = []
+        
+        async for message in client.iter_messages(entity, offset_date=end_dt):
+            if message.date < start_dt:
+                break
+                
+            messages.append(message)
+            
+            if message.media:
+                media_path = await download_media(client, message, chat_id)
+                if media_path:
+                    media_files.append({
+                        'message_id': message.id,
+                        'file_path': media_path,
+                        'media_type': get_media_type(message.media)
+                    })
+        
+        # Генерируем файл
+        if format == "html":
+            content = await generate_chat_html_with_media(client, entity, messages, media_files, period_name)
+            filename = f"{chat_title}_{start_date}_to_{end_date}.html"
+            media_type = "text/html"
+        elif format == "txt":
+            content = await generate_chat_txt_with_media(client, entity, messages, media_files, period_name)
+            filename = f"{chat_title}_{start_date}_to_{end_date}.txt"
+            media_type = "text/plain"
+        else:  # csv
+            content = await generate_chat_csv_with_media(client, entity, messages, media_files, period_name)
+            filename = f"{chat_title}_{start_date}_to_{end_date}.csv"
+            media_type = "text/csv"
+        
+        return HTMLResponse(
+            content,
+            headers={
+                "Content-Disposition": f"attachment; filename={filename}",
+                "Content-Type": media_type
+            }
+        )
+        
+    except Exception as e:
+        return HTMLResponse(f'<div class="error">❌ Ошибка: {str(e)}</div>')
+
+
+async def generate_chat_html_with_media(client, entity, messages, media_files, period_name):
+    """Генерирует HTML с встроенными медиафайлами"""
     chat_title = getattr(entity, 'title', 'Личная переписка')
-    creation_date = await get_chat_creation_date(client, entity)
+    
+    # Создаем карту медиафайлов для быстрого доступа
+    media_map = {m['message_id']: m for m in media_files}
     
     messages_html = ""
-    for message in reversed(messages):  # В хронологическом порядке
+    for message in reversed(messages):
         if message.out:
             sender = "Вы"
             sender_id = message.sender_id
@@ -447,23 +608,20 @@ async def generate_chat_html(client, entity, messages):
         content = ""
         if message.text:
             content = message.text
-        elif message.media:
-            media_type = get_media_type(message.media)
-            media_url = await download_media(client, message, entity.id)
-            if media_url:
-                if "Фото" in media_type:
-                    content = f'🖼️ <img src="{media_url}" style="max-width: 300px;" alt="Фото">'
-                elif "Видео" in media_type:
-                    content = f'🎥 <a href="{media_url}">Видео файл</a>'
-                elif "Аудио" in media_type:
-                    content = f'🎵 <a href="{media_url}">Аудио файл</a>'
-                elif "Стикер" in media_type:
-                    content = f'😊 <a href="{media_url}">Стикер</a>'
-                else:
-                    content = f'📎 <a href="{media_url}">{media_type}</a>'
+        
+        # Добавляем медиа если есть
+        if message.id in media_map:
+            media_info = media_map[message.id]
+            if "Фото" in media_info['media_type']:
+                content += f'<div class="media-container"><img src="{media_info["file_path"]}" class="media-content" alt="Фото"></div>'
+            elif "Видео" in media_info['media_type']:
+                content += f'<div class="media-container"><video controls class="media-content"><source src="{media_info["file_path"]}" type="video/mp4">Ваш браузер не поддерживает видео</video></div>'
+            elif "Аудио" in media_info['media_type']:
+                content += f'<div class="media-container"><audio controls class="media-content"><source src="{media_info["file_path"]}" type="audio/mpeg">Ваш браузер не поддерживает аудио</audio></div>'
             else:
-                content = f"[{media_type}]"
-        else:
+                content += f'<div class="media-container"><a href="{media_info["file_path"]}" download>📎 {media_info["media_type"]}</a></div>'
+        
+        if not content:
             content = "[Пустое сообщение]"
         
         messages_html += f"""
@@ -481,27 +639,28 @@ async def generate_chat_html(client, entity, messages):
     <html>
     <head>
         <meta charset="UTF-8">
-        <title>{chat_title}</title>
+        <title>{chat_title} - {period_name}</title>
         <style>
-            body {{ font-family: Arial, sans-serif; margin: 20px; }}
-            .message {{ margin: 10px 0; padding: 10px; border-radius: 5px; }}
-            .outgoing {{ background: #e3f2fd; margin-left: 50px; }}
-            .incoming {{ background: #f5f5f5; margin-right: 50px; }}
-            .message-header {{ display: flex; justify-content: space-between; margin-bottom: 5px; }}
+            body {{ font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }}
+            .message {{ margin: 15px 0; padding: 15px; border-radius: 10px; background: white; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }}
+            .outgoing {{ border-left: 4px solid #3b82f6; margin-left: 50px; }}
+            .incoming {{ border-left: 4px solid #10b981; margin-right: 50px; }}
+            .message-header {{ display: flex; justify-content: space-between; margin-bottom: 8px; }}
             .message-time {{ color: #666; font-size: 0.9em; }}
-            .chat-header {{ background: #f8f9fa; padding: 20px; border-radius: 10px; margin-bottom: 20px; }}
-            .stats {{ background: #e8f5e8; padding: 10px; border-radius: 5px; margin: 10px 0; }}
-            .media-preview {{ max-width: 300px; border-radius: 8px; margin: 5px 0; }}
+            .chat-header {{ background: white; padding: 25px; border-radius: 12px; margin-bottom: 20px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }}
+            .stats {{ background: #e8f5e8; padding: 12px; border-radius: 8px; margin: 15px 0; }}
+            .media-container {{ margin: 10px 0; }}
+            .media-content {{ max-width: 100%; max-height: 500px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }}
+            audio, video {{ width: 100%; max-width: 400px; }}
         </style>
     </head>
     <body>
         <div class="chat-header">
             <h1>💬 {chat_title}</h1>
             <div class="stats">
-                <strong>📊 Статистика:</strong> {len(messages)} сообщений
+                <strong>📊 Статистика:</strong> {len(messages)} сообщений, {len(media_files)} медиафайлов
             </div>
-            <p><strong>🆔 ID:</strong> {entity.id}</p>
-            <p><strong>📅 Создан:</strong> {creation_date.strftime('%d.%m.%Y %H:%M') if creation_date else 'Неизвестно'}</p>
+            <p><strong>📅 Период:</strong> {period_name}</p>
             <p><strong>📤 Экспорт:</strong> {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}</p>
         </div>
         <div class="messages">
@@ -512,15 +671,14 @@ async def generate_chat_html(client, entity, messages):
     """
 
 
-async def generate_chat_txt(client, entity, messages):
-    """Генерирует TXT файл для одного чата"""
+async def generate_chat_txt_with_media(client, entity, messages, media_files, period_name):
+    """Генерирует TXT файл с информацией о медиа"""
     chat_title = getattr(entity, 'title', 'Личная переписка')
-    creation_date = await get_chat_creation_date(client, entity)
     
     content = f"Чат: {chat_title}\n"
-    content += f"ID: {entity.id}\n"
-    content += f"Создан: {creation_date.strftime('%d.%m.%Y %H:%M') if creation_date else 'Неизвестно'}\n"
+    content += f"Период: {period_name}\n"
     content += f"Сообщений: {len(messages)}\n"
+    content += f"Медиафайлов: {len(media_files)}\n"
     content += f"Экспорт: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}\n"
     content += "="*60 + "\n\n"
     
@@ -537,28 +695,34 @@ async def generate_chat_txt(client, entity, messages):
                 sender = f"ID {message.sender_id}"
                 sender_id = message.sender_id
         
-        # Обрабатываем медиа в TXT
+        # Добавляем информацию о медиа
+        message_text = ""
         if message.text:
             message_text = message.text
-        elif message.media:
-            message_text = f"[{get_media_type(message.media)}]"
-        else:
-            message_text = "[Пустое сообщение]"
+        
+        # Проверяем есть ли медиа для этого сообщения
+        has_media = any(m['message_id'] == message.id for m in media_files)
+        if has_media:
+            media_info = next(m for m in media_files if m['message_id'] == message.id)
+            message_text += f" [{media_info['media_type']}]"
             
         content += f"[{message.date.strftime('%d.%m.%Y %H:%M:%S')}] {sender} (ID:{sender_id}): {message_text}\n"
     
     return content
 
 
-async def generate_chat_csv(client, entity, messages):
-    """Генерирует CSV файл для одного чата"""
+async def generate_chat_csv_with_media(client, entity, messages, media_files, period_name):
+    """Генерирует CSV файл с информацией о медиа"""
     chat_title = getattr(entity, 'title', 'Личная переписка')
     
     output = io.StringIO()
     writer = csv.writer(output)
     
-    # Заголовки CSV
-    writer.writerow(['Дата', 'Тип', 'Отправитель', 'ID отправителя', 'Тип контента', 'Сообщение'])
+    # Заголовки CSV с медиа
+    writer.writerow(['Дата', 'Тип', 'Отправитель', 'ID отправителя', 'Тип контента', 'Сообщение', 'Медиафайл'])
+    
+    # Создаем карту медиа
+    media_map = {m['message_id']: m for m in media_files}
     
     for message in reversed(messages):
         if message.out:
@@ -575,7 +739,7 @@ async def generate_chat_csv(client, entity, messages):
                 sender = f"ID {message.sender_id}"
                 sender_id = message.sender_id
         
-        # Определяем тип контента
+        # Определяем тип контента и медиа
         if message.text:
             content_type = "Текст"
             message_text = message.text
@@ -586,18 +750,47 @@ async def generate_chat_csv(client, entity, messages):
             content_type = "Пустое"
             message_text = "[Пустое сообщение]"
         
+        # Информация о медиа
+        media_info = ""
+        if message.id in media_map:
+            media_info = media_map[message.id]['file_path']
+        
         writer.writerow([
             message.date.strftime('%d.%m.%Y %H:%M:%S'),
             message_type,
             sender,
             sender_id,
             content_type,
-            message_text
+            message_text,
+            media_info
         ])
     
     return output.getvalue()
 
 
+# Старые функции для обратной совместимости
+@app.get("/download_chat/{chat_id}")
+async def download_chat(chat_id: int, format: str = "html"):
+    """Скачать всю историю чата (для обратной совместимости)"""
+    return await download_period(chat_id, "all", format)
+
+
+async def generate_chat_html(client, entity, messages):
+    """Старая функция для обратной совместимости"""
+    return await generate_chat_html_with_media(client, entity, messages, [], "вся история")
+
+
+async def generate_chat_txt(client, entity, messages):
+    """Старая функция для обратной совместимости"""
+    return await generate_chat_txt_with_media(client, entity, messages, [], "вся история")
+
+
+async def generate_chat_csv(client, entity, messages):
+    """Старая функция для обратной совместимости"""
+    return await generate_chat_csv_with_media(client, entity, messages, [], "вся история")
+
+
+# Остальной код остается без изменений
 @app.get("/export_all")
 async def export_all():
     """Экспорт всех чатов в HTML и CSV"""
