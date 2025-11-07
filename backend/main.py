@@ -450,7 +450,7 @@ async def download_period(
         entity = await client.get_entity(chat_id)
         chat_title = getattr(entity, 'title', 'Личная переписка')
         
-        # Определяем даты периода
+        # Определяем даты периода (без временных зон)
         end_date = datetime.now()
         if days == "all":
             start_date = None  # Вся история
@@ -471,9 +471,19 @@ async def download_period(
         messages = []
         media_files = []
         
-        async for message in client.iter_messages(entity, offset_date=end_date):
-            if start_date and message.date < start_date:
-                break
+        # Убираем временную зону для сравнения
+        if start_date:
+            start_date = start_date.replace(tzinfo=None)
+        end_date = end_date.replace(tzinfo=None)
+        
+        async for message in client.iter_messages(entity):
+            # Убираем временную зону у даты сообщения
+            message_date = message.date.replace(tzinfo=None) if message.date.tzinfo else message.date
+            
+            if start_date and message_date < start_date:
+                continue
+            if message_date > end_date:
+                continue
                 
             messages.append(message)
             
@@ -486,6 +496,9 @@ async def download_period(
                         'file_path': media_path,
                         'media_type': get_media_type(message.media)
                     })
+        
+        # Сортируем сообщения по дате (от старых к новым)
+        messages.sort(key=lambda x: x.date)
         
         print(f"📥 Собрано {len(messages)} сообщений и {len(media_files)} медиафайлов")
         
@@ -532,7 +545,7 @@ async def download_custom_period(
         entity = await client.get_entity(chat_id)
         chat_title = getattr(entity, 'title', 'Личная переписка')
         
-        # Парсим даты
+        # Парсим даты (без временных зон)
         start_dt = datetime.strptime(start_date, "%Y-%m-%d")
         end_dt = datetime.strptime(end_date, "%Y-%m-%d").replace(hour=23, minute=59, second=59)
         
@@ -542,9 +555,12 @@ async def download_custom_period(
         messages = []
         media_files = []
         
-        async for message in client.iter_messages(entity, offset_date=end_dt):
-            if message.date < start_dt:
-                break
+        async for message in client.iter_messages(entity):
+            # Убираем временную зону у даты сообщения
+            message_date = message.date.replace(tzinfo=None) if message.date.tzinfo else message.date
+            
+            if message_date < start_dt or message_date > end_dt:
+                continue
                 
             messages.append(message)
             
@@ -556,6 +572,9 @@ async def download_custom_period(
                         'file_path': media_path,
                         'media_type': get_media_type(message.media)
                     })
+        
+        # Сортируем сообщения по дате
+        messages.sort(key=lambda x: x.date)
         
         # Генерируем файл
         if format == "html":
