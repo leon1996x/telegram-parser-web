@@ -770,3 +770,96 @@ audio, video {
     max-width: 400px;
     margin: 5px 0;
 }
+
+/* Стили для информации об участниках */
+.participants-info {
+    background: #f8f9fa;
+    padding: 20px;
+    border-radius: 12px;
+    margin: 20px 0;
+    border: 1px solid #e9ecef;
+}
+
+.participants-stats {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+    gap: 15px;
+    margin-top: 15px;
+}
+
+.participants-stats p {
+    margin: 5px 0;
+    padding: 10px;
+    background: white;
+    border-radius: 8px;
+    border: 1px solid #e9ecef;
+}
+
+.participants-download {
+    background: #e3f2fd;
+    padding: 15px;
+    border-radius: 8px;
+    margin: 15px 0;
+    border: 1px solid #bbdefb;
+}
+
+.participants-download h4 {
+    margin: 0 0 10px 0;
+    color: #1565c0;
+}
+
+/* Стили для ссылки на чат */
+.chat-link {
+    color: #3b82f6;
+}
+
+.chat-link a {
+    color: #3b82f6;
+    text-decoration: none;
+    font-weight: 500;
+}
+
+.chat-link a:hover {
+    text-decoration: underline;
+}
+
+/* Стили для мета-информации чата */
+.chat-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    margin-bottom: 8px;
+}
+
+.chat-meta span {
+    font-size: 13px;
+    color: #4a5568;
+}
+
+.chat-info-bar {
+    display: flex;
+    gap: 15px;
+    margin: 15px 0;
+    flex-wrap: wrap;
+    font-size: 14px;
+    color: #4a5568;
+}
+
+.chat-info-bar span {
+    background: #f7fafc;
+    padding: 6px 12px;
+    border-radius: 6px;
+    border: 1px solid #e2e8f0;
+}
+
+/* Адаптивность для участников */
+@media (max-width: 768px) {
+    .participants-stats {
+        grid-template-columns: 1fr;
+    }
+    
+    .chat-info-bar {
+        flex-direction: column;
+        gap: 10px;
+    }
+}
