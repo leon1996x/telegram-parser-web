@@ -707,11 +707,11 @@ async def view_chat(chat_id: int, offset_id: int = Query(0, ge=0)):
                 if media_url:
                     if "Фото" in media_type:
                         content = f'🖼️ <a href="{media_url}" target="_blank"><img src="{media_url}" class="media-preview" alt="Фото"></a>'
-                    elif "Видео" в media_type:
+                    elif "Видео" in media_type:
                         content = f'🎥 <a href="{media_url}" target="_blank">Видео файл</a>'
-                    elif "Аудио" в media_type:
+                    elif "Аудио" in media_type:
                         content = f'🎵 <a href="{media_url}" target="_blank">Аудио файл</a>'
-                    elif "Стикер" в media_type:
+                    elif "Стикер" in media_type:
                         content = f'😊 <a href="{media_url}" target="_blank">Стикер</a>'
                     else:
                         content = f'📎 <a href="{media_url}" target="_blank">{media_type}</a>'
