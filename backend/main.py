@@ -334,20 +334,20 @@ async def download_media_fast(client, message, chat_id):
         return None
 
 async def get_chat_participants(client, entity, limit=20000):
-    """Получает список участников чата - ОБНОВЛЕННАЯ ВЕРСИЯ"""
+    """УЛУЧШЕННАЯ функция сбора участников - собирает ВСЕХ из истории сообщений"""
     participants = {}
     message_count = 0
     
     print(f"🔍 Начинаем сбор участников для: {getattr(entity, 'title', 'чата')}")
     
-    # СНАЧАЛА пробуем собрать из сообщений - это всегда работает!
+    # СНАЧАЛА собираем из сообщений - это всегда работает!
     print("🔄 Сбор участников из истории сообщений...")
     
     try:
         async for message in client.iter_messages(entity, limit=limit):
             message_count += 1
             
-            # ОСНОВНОЙ СПОСОБ - используем sender_id
+            # ОСНОВНОЙ СПОСОБ - используем sender_id который ВСЕГДА есть
             if hasattr(message, 'sender_id') and message.sender_id:
                 sender_id = message.sender_id
                 
@@ -371,7 +371,7 @@ async def get_chat_participants(client, entity, limit=20000):
                         'source': 'from_messages'
                     }
             
-            # Прогресс
+            # Прогресс каждые 500 сообщений
             if message_count % 500 == 0:
                 print(f"📨 Обработано {message_count} сообщений, найдено {len(participants)} участников")
                 
@@ -397,12 +397,6 @@ async def get_chat_participants(client, entity, limit=20000):
                         'source': 'participants_list'
                     }
                     added_from_list += 1
-                else:
-                    # Обновляем существующего участника данными из списка
-                    participants[user.id].update({
-                        'phone': user.phone or '',
-                        'source': 'both_sources'
-                    })
             
             print(f"✅ Из списка добавлено: {added_from_list} новых участников")
             
@@ -410,40 +404,6 @@ async def get_chat_participants(client, entity, limit=20000):
         print(f"⚠️ Не удалось получить список участников: {safe_error_message(e)}")
     
     print(f"🎯 ИТОГО собрано участников: {len(participants)}")
-    return participants
-
-async def get_participants_from_messages_only(client, entity, limit=20000):
-    """Собирает участников ТОЛЬКО из истории сообщений - максимально просто"""
-    participants = {}
-    message_count = 0
-    
-    print(f"🔍 Простой сбор участников из сообщений для: {getattr(entity, 'title', 'чата')}")
-    
-    async for message in client.iter_messages(entity, limit=limit):
-        message_count += 1
-        
-        # САМЫЙ ПРОСТОЙ СПОСОБ - только sender_id
-        if hasattr(message, 'sender_id') and message.sender_id:
-            sender_id = message.sender_id
-            
-            if sender_id not in participants:
-                participants[sender_id] = {
-                    'id': sender_id,
-                    'username': '',
-                    'first_name': '', 
-                    'last_name': '',
-                    'phone': '',
-                    'source': 'messages_only'
-                }
-        
-        # Добавляем username если есть
-        if message.sender and hasattr(message.sender, 'username') and message.sender.username:
-            participants[sender_id]['username'] = message.sender.username
-        
-        if message_count % 1000 == 0:
-            print(f"📨 Обработано {message_count} сообщений, участников: {len(participants)}")
-    
-    print(f"✅ Собрано {len(participants)} участников из {message_count} сообщений")
     return participants
 
 def get_chat_link(entity):
@@ -858,49 +818,6 @@ async def download_participants(chat_id: int, format: str = "html"):
     except Exception as e:
         return HTMLResponse(f'<div class="error">❌ Ошибка: {safe_error_message(e)}</div>')
 
-@app.get("/debug_participants/{chat_id}")
-async def debug_participants(chat_id: int):
-    """Отладочная страница для проверки сбора участников"""
-    if not clients:
-        return HTMLResponse("<h3>Нет активной сессии</h3>")
-
-    client = list(clients.values())[0]
-    
-    try:
-        entity = await client.get_entity(chat_id)
-        chat_title = getattr(entity, 'title', 'Личная переписка')
-        
-        # Тестируем оба способа
-        participants1 = await get_chat_participants(client, entity, limit=5000)
-        participants2 = await get_participants_from_messages_only(client, entity, limit=5000)
-        
-        html = f"""
-        <html>
-        <head><title>Отладка: {chat_title}</title></head>
-        <body>
-            <h1>🔧 Отладка сбора участников: {chat_title}</h1>
-            <div style="display:flex; gap:20px;">
-                <div style="flex:1; background:#f0f0f0; padding:20px;">
-                    <h3>Способ 1 (комбинированный):</h3>
-                    <p>Участников: {len(participants1)}</p>
-                    <pre>{json.dumps(list(participants1.values())[:10], ensure_ascii=False, indent=2)}</pre>
-                </div>
-                <div style="flex:1; background:#f0f0f0; padding:20px;">
-                    <h3>Способ 2 (только сообщения):</h3>
-                    <p>Участников: {len(participants2)}</p>
-                    <pre>{json.dumps(list(participants2.values())[:10], ensure_ascii=False, indent=2)}</pre>
-                </div>
-            </div>
-            <a class="btn" href="/chat/{chat_id}">← Назад к чату</a>
-        </body>
-        </html>
-        """
-        
-        return HTMLResponse(html)
-        
-    except Exception as e:
-        return HTMLResponse(f'<div class="error">❌ Ошибка: {safe_error_message(e)}</div>')
-
 def generate_participants_html(chat_title, chat_link, participants):
     """Генерирует HTML файл со списком участников"""
     participants_list = list(participants.values())
@@ -1028,355 +945,8 @@ def generate_participants_txt(chat_title, chat_link, participants):
     
     return content
 
-# Остальные функции остаются без изменений...
+# Остальной код остается без изменений...
 
-async def generate_chat_csv_with_media(client, entity, messages, media_files, period_name):
-    """Генерирует CSV файл с информацией о медиа"""
-    chat_title = getattr(entity, 'title', 'Личная переписка')
-    
-    output = io.StringIO()
-    writer = csv.writer(output)
-    
-    # Заголовки CSV с медиа
-    writer.writerow(['Дата', 'Тип', 'Отправитель', 'ID отправителя', 'Тип контента', 'Сообщение', 'Медиафайл'])
-    
-    # Создаем карту медиа
-    media_map = {m['message_id']: m for m in media_files}
-    
-    for message in reversed(messages):
-        if message.out:
-            message_type = "Исходящее"
-            sender = "Вы"
-            sender_id = message.sender_id
-        else:
-            message_type = "Входящее"
-            sender_obj = message.sender
-            if sender_obj:
-                sender = f"@{sender_obj.username}" if sender_obj.username else f"ID {sender_obj.id}"
-                sender_id = sender_obj.id
-            else:
-                sender = f"ID {message.sender_id}"
-                sender_id = message.sender_id
-        
-        # Определяем тип контента и медиа
-        if message.text:
-            content_type = "Текст"
-            message_text = message.text
-        elif message.media:
-            content_type = get_media_type(message.media)
-            message_text = f"[{content_type}]"
-        else:
-            content_type = "Пустое"
-            message_text = "[Пустое сообщение]"
-        
-        # Информация о медиа
-        media_info = ""
-        if message.id in media_map:
-            media_info = media_map[message.id]['file_path']
-        
-        writer.writerow([
-            message.date.strftime('%d.%m.%Y %H:%M:%S'),
-            message_type,
-            sender,
-            sender_id,
-            content_type,
-            message_text,
-            media_info
-        ])
-    
-    return output.getvalue()
-
-# Старые функции для обратной совместимости
-@app.get("/download_chat/{chat_id}")
-async def download_chat(chat_id: int, format: str = "html"):
-    """Скачать всю историю чата (для обратной совместимости)"""
-    return await download_period(chat_id, "all", format)
-
-async def generate_chat_html(client, entity, messages):
-    """Старая функция для обратной совместимости"""
-    return await generate_chat_html_with_media(client, entity, messages, [], "вся история")
-
-async def generate_chat_txt(client, entity, messages):
-    """Старая функция для обратной совместимости"""
-    return await generate_chat_txt_with_media(client, entity, messages, [], "вся история")
-
-async def generate_chat_csv(client, entity, messages):
-    """Старая функция для обратной совместимости"""
-    return await generate_chat_csv_with_media(client, entity, messages, [], "вся история")
-
-# Остальной код остается без изменений
-@app.get("/export_all")
-async def export_all():
-    """Экспорт всех чатов в HTML и CSV"""
-    if not clients:
-        return HTMLResponse("<h3>Нет активной сессии</h3>")
-
-    client = list(clients.values())[0]
-    
-    # Очищаем предыдущие экспорты
-    for folder in ["chats", "csv", "participants"]:
-        folder_path = os.path.join(EXPORTS_DIR, folder)
-        for filename in os.listdir(folder_path):
-            file_path = os.path.join(folder_path, filename)
-            if os.path.isfile(file_path):
-                os.remove(file_path)
-
-    dialogs = await client.get_dialogs()
-    
-    results = []
-    total_messages = 0
-    
-    for dialog in dialogs:
-        try:
-            chat_data = await export_chat_history(client, dialog)
-            results.append(chat_data)
-            total_messages += chat_data['messages_count']
-        except Exception as e:
-            print(f"Ошибка экспорта чата {dialog.name}: {safe_error_message(e)}")
-    
-    # Создаем ZIP архив
-    zip_filename = f"export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.zip"
-    zip_path = os.path.join(EXPORTS_DIR, "archives", zip_filename)
-    create_zip_archive(zip_path)
-    
-    return HTMLResponse(f'''
-        <div class="success">
-            ✅ Экспорт завершен!<br>
-            Обработано чатов: {len(results)}<br>
-            Сообщений: {total_messages}<br>
-            <a class="btn" href="/download_export">📥 Скачать ZIP архив</a>
-        </div>
-        <a class="btn" href="/chats">← Назад к чатам</a>
-    ''')
-
-async def export_chat_history(client, dialog):
-    """Экспорт истории конкретного чата"""
-    entity = dialog.entity
-    chat_id = entity.id
-    chat_title = getattr(entity, 'title', 'Личная переписка')
-    
-    # Собираем метаданные
-    chat_info = {
-        'id': chat_id,
-        'title': chat_title,
-        'type': 'group' if hasattr(entity, 'participants_count') else 'private',
-        'export_date': datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    }
-    
-    # Собираем историю сообщений и участников одновременно
-    messages_html = ""
-    messages_csv = []
-    participants = {}  # Используем словарь чтобы избежать дубликатов
-    
-    async for message in client.iter_messages(entity, limit=200):
-        msg_data = process_message(message)
-        messages_html += msg_data['html']
-        messages_csv.append(msg_data['csv'])
-        
-        # Собираем участников из отправителей сообщений
-        if message.sender:
-            sender_id = message.sender.id
-            if sender_id not in participants:
-                participants[sender_id] = {
-                    'id': sender_id,
-                    'username': getattr(message.sender, 'username', ''),
-                    'first_name': getattr(message.sender, 'first_name', ''),
-                    'last_name': getattr(message.sender, 'last_name', '')
-                }
-    
-    # Преобразуем словарь обратно в список
-    participants_list = list(participants.values())
-    
-    # Если это группа/канал и участников мало, пробуем получить полный список
-    if hasattr(entity, 'participants_count') and len(participants_list) < 10:
-        try:
-            async for user in client.iter_participants(entity, limit=50):
-                user_id = user.id
-                if user_id not in participants:
-                    participants[user_id] = {
-                        'id': user_id,
-                        'username': user.username or '',
-                        'first_name': user.first_name or '',
-                        'last_name': user.last_name or ''
-                    }
-            participants_list = list(participants.values())
-        except Exception as e:
-            print(f"Не удалось получить участников чата {chat_title}: {safe_error_message(e)}")
-            # Продолжаем с участниками из сообщений
-    
-    # Сохраняем HTML файл с правильной кодировкой
-    html_content = create_chat_html(chat_info, participants_list, messages_html, len(messages_csv))
-    html_path = os.path.join(EXPORTS_DIR, "chats", f"chat_{chat_id}.html")
-    try:
-        with open(html_path, "w", encoding="utf-8") as f:
-            f.write(html_content)
-    except Exception as e:
-        print(f"❌ Ошибка записи HTML файла: {safe_error_message(e)}")
-        # Пробуем альтернативный способ
-        try:
-            with open(html_path, "wb") as f:
-                f.write(html_content.encode('utf-8'))
-        except Exception as e2:
-            print(f"❌ Критическая ошибка записи HTML: {safe_error_message(e2)}")
-    
-    # Сохраняем CSV с правильной кодировкой
-    csv_path = os.path.join(EXPORTS_DIR, "csv", f"chat_{chat_id}.csv")
-    try:
-        with open(csv_path, "w", newline='', encoding="utf-8") as f:
-            writer = csv.writer(f)
-            writer.writerow(['date', 'sender_id', 'sender_username', 'message_type', 'content'])
-            writer.writerows(messages_csv)
-    except Exception as e:
-        print(f"❌ Ошибка записи CSV файла: {safe_error_message(e)}")
-    
-    # Сохраняем участников с правильной кодировкой
-    json_path = os.path.join(EXPORTS_DIR, "participants", f"chat_{chat_id}.json")
-    try:
-        with open(json_path, "w", encoding="utf-8") as f:
-            json.dump({
-                'chat_info': chat_info,
-                'participants': participants_list,
-                'participants_source': 'from_messages' if len(participants_list) > 0 else 'unknown'
-            }, f, ensure_ascii=False, indent=2)
-    except Exception as e:
-        print(f"❌ Ошибка записи JSON файла: {safe_error_message(e)}")
-    
-    return {
-        'id': chat_id,
-        'title': chat_title,
-        'messages_count': len(messages_csv),
-        'participants_count': len(participants_list)
-    }
-
-def process_message(message):
-    """Обработка одного сообщения для HTML и CSV"""
-    # Определяем тип сообщения и отправителя
-    if message.out:
-        sender_type = "Исходящее"
-        sender_info = f"Вы (ID {message.sender_id})"
-    else:
-        sender = message.sender
-        if sender:
-            username = f"@{sender.username}" if sender.username else ""
-            sender_info = f"{username} (ID {sender.id})"
-        else:
-            sender_info = f"Unknown (ID {message.sender_id})"
-        sender_type = "Входящее"
-    
-    # Обрабатываем контент сообщения
-    if message.text:
-        content = message.text
-    elif message.media:
-        content = f"[{get_media_type(message.media)}]"
-    else:
-        content = "[Пустое сообщение]"
-    
-    # HTML версия
-    html = f"""
-    <div class="message {'outgoing' if message.out else 'incoming'}">
-        <div class="message-header">
-            <strong>{sender_type}: {sender_info}</strong>
-            <span class="message-time">{message.date.strftime('%d.%m.%Y %H:%M:%S')}</span>
-        </div>
-        <div class="message-content">{content}</div>
-    </div>
-    """
-    
-    # CSV версия
-    csv_row = [
-        message.date.strftime('%d.%m.%Y %H:%M:%S'),
-        message.sender_id,
-        getattr(message.sender, 'username', '') if message.sender else '',
-        'outgoing' if message.out else 'incoming',
-        str(content)[:500]  # ограничиваем длину для CSV
-    ]
-    
-    return {'html': html, 'csv': csv_row}
-
-def create_chat_html(chat_info, participants, messages_html, total_messages):
-    """Создает HTML файл с историей чата"""
-    participants_source = "из истории сообщений" if participants and any(p['username'] for p in participants) else "не удалось получить"
-    
-    return f"""
-    <!DOCTYPE html>
-    <html>
-    <head>
-        <meta charset="UTF-8">
-        <title>История чата: {chat_info['title']}</title>
-        <style>
-            body {{ font-family: Arial, sans-serif; margin: 20px; }}
-            .message {{ margin: 10px 0; padding: 10px; border-radius: 5px; }}
-            .outgoing {{ background: #e3f2fd; margin-left: 50px; }}
-            .incoming {{ background: #f5f5f5; margin-right: 50px; }}
-            .message-header {{ display: flex; justify-content: space-between; }}
-            .message-time {{ color: #666; font-size: 0.9em; }}
-            .participants {{ background: #eee; padding: 15px; margin: 20px 0; }}
-            .chat-info {{ background: #f8f9fa; padding: 15px; border-radius: 5px; }}
-            .source-note {{ color: #666; font-size: 0.9em; font-style: italic; }}
-            .stats {{ background: #e8f5e8; padding: 10px; border-radius: 5px; margin: 10px 0; }}
-        </style>
-    </head>
-    <body>
-        <h1>💬 Чат: {chat_info['title']}</h1>
-        
-        <div class="stats">
-            <strong>📊 Статистика:</strong> {total_messages} сообщений, {len(participants)} участников
-        </div>
-        
-        <div class="chat-info">
-            <p><strong>ID чата:</strong> {chat_info['id']}</p>
-            <p><strong>Тип:</strong> {chat_info['type']}</p>
-            <p><strong>Дата экспорта:</strong> {chat_info['export_date']}</p>
-        </div>
-        
-        <div class="participants">
-            <h3>👥 Участники ({len(participants)}):</h3>
-            <p class="source-note">Источник: {participants_source}</p>
-            {'<br>'.join([f"@{p['username']} (ID: {p['id']}) - {p['first_name']} {p['last_name']}" for p in participants if p['username']])}
-            {'' if any(p['username'] for p in participants) else '<p>Участники собраны из истории сообщений</p>'}
-        </div>
-        
-        <h3>📝 История сообщений ({total_messages}):</h3>
-        <div class="messages">
-            {messages_html if messages_html else '<p>Сообщений не найдено</p>'}
-        </div>
-    </body>
-    </html>
-    """
-
-def create_zip_archive(zip_path):
-    """Создает ZIP архив со всеми экспортированными файлами"""
-    with zipfile.ZipFile(zip_path, 'w') as zipf:
-        for folder in ["chats", "csv", "participants"]:
-            folder_path = os.path.join(EXPORTS_DIR, folder)
-            for filename in os.listdir(folder_path):
-                file_path = os.path.join(folder_path, filename)
-                if os.path.isfile(file_path):
-                    zipf.write(file_path, f"{folder}/{filename}")
-
-@app.get("/download_export")
-async def download_export():
-    """Скачать последний созданный архив"""
-    archives_dir = os.path.join(EXPORTS_DIR, "archives")
-    if not os.path.exists(archives_dir) or not os.listdir(archives_dir):
-        return HTMLResponse('<div class="error">❌ Архив не найден. Сначала выполните экспорт.</div>')
-    
-    # Находим последний архив
-    archives = [f for f in os.listdir(archives_dir) if f.endswith('.zip')]
-    if not archives:
-        return HTMLResponse('<div class="error">❌ Архив не найден.</div>')
-    
-    latest_archive = sorted(archives)[-1]  # последний по времени
-    archive_path = os.path.join(archives_dir, latest_archive)
-    
-    # Кодируем имя файла для безопасной загрузки
-    encoded_filename = urllib.parse.quote(latest_archive)
-    
-    return FileResponse(
-        archive_path,
-        filename=f"telegram_export_{datetime.now().strftime('%Y%m%d')}.zip",
-        media_type='application/zip',
-        headers={
-            "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"
-        }
-    )
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=10000)
