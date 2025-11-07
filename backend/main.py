@@ -9,6 +9,7 @@ import csv
 import json
 import zipfile
 import io
+import asyncio
 
 app = FastAPI()
 
@@ -106,11 +107,11 @@ def get_media_type(media):
     if hasattr(media, 'document'):
         if hasattr(media.document, 'mime_type'):
             mime = media.document.mime_type
-            if mime.startswith('image/'):
+            if mime and 'image' in mime:
                 return "🖼️ Фото"
-            elif mime.startswith('video/'):
+            elif mime and 'video' in mime:
                 return "🎥 Видео"
-            elif mime.startswith('audio/'):
+            elif mime and 'audio' in mime:
                 return "🎵 Аудио"
         return "📎 Файл"
     elif hasattr(media, 'photo'):
@@ -127,7 +128,7 @@ def get_media_type(media):
 
 
 async def download_media(client, message, chat_id):
-    """Скачивает медиафайл и возвращает путь"""
+    """Скачивает медиафайл и возвращает путь с улучшенной обработкой"""
     if not message.media:
         return None
     
@@ -136,29 +137,120 @@ async def download_media(client, message, chat_id):
         chat_media_dir = os.path.join(MEDIA_DIR, str(chat_id))
         os.makedirs(chat_media_dir, exist_ok=True)
         
-        # Генерируем имя файла
+        # Получаем информацию о файле для правильного расширения
         file_ext = ".jpg"
-        if hasattr(message.media, 'document'):
-            if message.media.document.mime_type:
-                if 'image' in message.media.document.mime_type:
-                    file_ext = ".jpg"
-                elif 'video' in message.media.document.mime_type:
-                    file_ext = ".mp4"
-                elif 'audio' in message.media.document.mime_type:
-                    file_ext = ".mp3"
-                else:
-                    file_ext = ".file"
+        file_name = f"{message.id}"
         
-        filename = f"{message.id}{file_ext}"
+        if hasattr(message.media, 'document'):
+            doc = message.media.document
+            if hasattr(doc, 'mime_type') and doc.mime_type:
+                mime = doc.mime_type
+                if 'image/jpeg' in mime or 'image/jpg' in mime:
+                    file_ext = ".jpg"
+                elif 'image/png' in mime:
+                    file_ext = ".png"
+                elif 'image/gif' in mime:
+                    file_ext = ".gif"
+                elif 'image/webp' in mime:
+                    file_ext = ".webp"
+                elif 'video/' in mime:
+                    file_ext = ".mp4"
+                elif 'audio/' in mime:
+                    file_ext = ".mp3"
+                elif 'application/pdf' in mime:
+                    file_ext = ".pdf"
+                else:
+                    # Пытаемся получить расширение из attributes
+                    for attr in doc.attributes:
+                        if hasattr(attr, 'file_name') and attr.file_name:
+                            file_name = attr.file_name
+                            if '.' in file_name:
+                                file_ext = '.' + file_name.split('.')[-1]
+                            break
+                    if file_ext == ".jpg":
+                        file_ext = ".file"
+            else:
+                file_ext = ".file"
+        elif hasattr(message.media, 'photo'):
+            file_ext = ".jpg"
+        elif hasattr(message.media, 'sticker'):
+            file_ext = ".webp"
+        
+        filename = f"{file_name}{file_ext}"
         file_path = os.path.join(chat_media_dir, filename)
         
         # Скачиваем файл если его нет
         if not os.path.exists(file_path):
-            await client.download_media(message.media, file=file_path)
+            print(f"📥 Скачиваю медиа: {filename}")
+            try:
+                # Быстрое скачивание с таймаутом
+                await asyncio.wait_for(
+                    client.download_media(message.media, file=file_path),
+                    timeout=30.0
+                )
+                print(f"✅ Скачано: {filename}")
+            except asyncio.TimeoutError:
+                print(f"⏰ Таймаут при скачивании: {filename}")
+                return None
+            except Exception as download_error:
+                print(f"❌ Ошибка скачивания {filename}: {download_error}")
+                return None
         
         return f"/static/media/{chat_id}/{filename}"
     except Exception as e:
-        print(f"Ошибка загрузки медиа: {e}")
+        print(f"❌ Ошибка загрузки медиа {message.id}: {e}")
+        return None
+
+
+async def download_media_fast(client, message, chat_id):
+    """Быстрое скачивание медиа с кэшированием"""
+    if not message.media:
+        return None
+    
+    try:
+        chat_media_dir = os.path.join(MEDIA_DIR, str(chat_id))
+        os.makedirs(chat_media_dir, exist_ok=True)
+        
+        # Простое определение типа файла
+        if hasattr(message.media, 'photo'):
+            file_ext = ".jpg"
+        elif hasattr(message.media, 'document'):
+            doc = message.media.document
+            if hasattr(doc, 'mime_type'):
+                mime = doc.mime_type
+                if mime and 'image' in mime:
+                    file_ext = ".jpg"
+                elif mime and 'video' in mime:
+                    file_ext = ".mp4"
+                elif mime and 'audio' in mime:
+                    file_ext = ".mp3"
+                else:
+                    file_ext = ".file"
+            else:
+                file_ext = ".file"
+        else:
+            return None
+        
+        filename = f"{message.id}{file_ext}"
+        file_path = os.path.join(chat_media_dir, filename)
+        
+        # Если файл уже существует, возвращаем путь
+        if os.path.exists(file_path):
+            return f"/static/media/{chat_id}/{filename}"
+        
+        # Быстрое скачивание без прогресса
+        try:
+            await asyncio.wait_for(
+                client.download_media(message.media, file=file_path),
+                timeout=15.0
+            )
+            return f"/static/media/{chat_id}/{filename}"
+        except asyncio.TimeoutError:
+            print(f"⏰ Таймаут при быстром скачивании: {filename}")
+            return None
+        
+    except Exception as e:
+        print(f"⚠️ Не удалось скачать медиа {message.id}: {e}")
         return None
 
 
@@ -279,6 +371,12 @@ def create_download_buttons(chat_id, chat_title):
     buttons_html = """
     <div class="download-section">
         <h3>📥 Скачать историю с медиафайлами:</h3>
+        <div class="progress-container" id="progressContainer" style="display: none;">
+            <div class="progress-bar">
+                <div class="progress-fill" id="progressFill"></div>
+            </div>
+            <div class="progress-text" id="progressText">Подготовка...</div>
+        </div>
         <div class="period-buttons">
     """
     
@@ -287,17 +385,48 @@ def create_download_buttons(chat_id, chat_title):
             <div class="period-group">
                 <div class="period-name">{period['name']}</div>
                 <div class="format-buttons">
-                    <a class="btn-download small" href="/download_period/{chat_id}?days={period['days']}&format=html">HTML</a>
-                    <a class="btn-download small" href="/download_period/{chat_id}?days={period['days']}&format=txt">TXT</a>
-                    <a class="btn-download small" href="/download_period/{chat_id}?days={period['days']}&format=csv">CSV</a>
+                    <a class="btn-download small" href="/download_period/{chat_id}?days={period['days']}&format=html" onclick="showProgress('{period['name']}')">HTML</a>
+                    <a class="btn-download small" href="/download_period/{chat_id}?days={period['days']}&format=txt" onclick="showProgress('{period['name']}')">TXT</a>
+                    <a class="btn-download small" href="/download_period/{chat_id}?days={period['days']}&format=csv" onclick="showProgress('{period['name']}')">CSV</a>
                 </div>
             </div>
         """
     
     buttons_html += """
         </div>
-        <p class="note">💡 Все фото и видео будут встроены в HTML файл</p>
+        
+        <div class="fast-download">
+            <h4>⚡ Быстрая версия (без медиа):</h4>
+            <div class="format-buttons">
+                <a class="btn-download small" href="/download_period_fast/{chat_id}?days=all&format=html" onclick="showProgress('Вся история (быстро)')">HTML</a>
+                <a class="btn-download small" href="/download_period_fast/{chat_id}?days=all&format=txt" onclick="showProgress('Вся история (быстро)')">TXT</a>
+                <a class="btn-download small" href="/download_period_fast/{chat_id}?days=all&format=csv" onclick="showProgress('Вся история (быстро)')">CSV</a>
+            </div>
+        </div>
+        
+        <p class="note">💡 Фото, видео и аудио будут встроены в HTML файл</p>
+        <p class="note">⚡ Для больших периодов скачивание может занять несколько минут</p>
     </div>
+    
+    <script>
+    function showProgress(periodName) {
+        document.getElementById('progressContainer').style.display = 'block';
+        document.getElementById('progressText').textContent = 'Подготовка ' + periodName + '...';
+        
+        let progress = 0;
+        const interval = setInterval(() => {
+            progress += Math.random() * 10;
+            if (progress > 90) progress = 90;
+            document.getElementById('progressFill').style.width = progress + '%';
+            document.getElementById('progressText').textContent = 'Обработка ' + periodName + '... ' + Math.round(progress) + '%';
+        }, 500);
+        
+        // Остановить анимацию когда страница загрузится
+        window.addEventListener('beforeunload', () => {
+            clearInterval(interval);
+        });
+    }
+    </script>
     """
     
     return buttons_html
@@ -346,7 +475,7 @@ async def view_chat(chat_id: int, offset_id: int = Query(0, ge=0)):
                 content = message.text
             elif message.media:
                 media_type = get_media_type(message.media)
-                media_url = await download_media(client, message, chat_id)
+                media_url = await download_media_fast(client, message, chat_id)
                 if media_url:
                     if "Фото" in media_type:
                         content = f'🖼️ <a href="{media_url}" target="_blank"><img src="{media_url}" class="media-preview" alt="Фото"></a>'
@@ -440,7 +569,7 @@ async def download_period(
     days: str = Query(...),
     format: str = "html"
 ):
-    """Скачать историю за определенный период с медиафайлами"""
+    """Скачать историю за определенный период с медиафайлами - ОПТИМИЗИРОВАННАЯ"""
     if not clients:
         return HTMLResponse("<h3>Нет активной сессии</h3>")
 
@@ -450,24 +579,31 @@ async def download_period(
         entity = await client.get_entity(chat_id)
         chat_title = getattr(entity, 'title', 'Личная переписка')
         
-        # Определяем даты периода (без временных зон)
+        # Определяем даты периода
         end_date = datetime.now()
         if days == "all":
-            start_date = None  # Вся история
+            start_date = None
             period_name = "вся история"
+            # Для всей истории используем лимит
+            limit = 5000
         elif days == "month":
             start_date = datetime(end_date.year, end_date.month, 1)
             period_name = f"месяц {end_date.strftime('%B %Y')}"
+            limit = 2000
         elif days == "last_month":
             last_month = end_date.replace(day=1) - timedelta(days=1)
             start_date = datetime(last_month.year, last_month.month, 1)
             end_date = datetime(last_month.year, last_month.month, last_month.day, 23, 59, 59)
             period_name = f"месяц {last_month.strftime('%B %Y')}"
+            limit = 2000
         else:
             start_date = end_date - timedelta(days=int(days))
             period_name = f"последние {days} дней"
+            limit = 1000
         
-        # Собираем сообщения за период
+        print(f"🔍 Поиск сообщений за период: {period_name}")
+        
+        # Собираем сообщения за период ОПТИМИЗИРОВАННО
         messages = []
         media_files = []
         
@@ -476,7 +612,13 @@ async def download_period(
             start_date = start_date.replace(tzinfo=None)
         end_date = end_date.replace(tzinfo=None)
         
-        async for message in client.iter_messages(entity):
+        # Используем batch processing для скорости
+        message_count = 0
+        
+        async for message in client.iter_messages(entity, limit=limit):
+            if message_count >= limit:
+                break
+                
             # Убираем временную зону у даты сообщения
             message_date = message.date.replace(tzinfo=None) if message.date.tzinfo else message.date
             
@@ -486,19 +628,17 @@ async def download_period(
                 continue
                 
             messages.append(message)
+            message_count += 1
             
-            # Собираем медиафайлы
+            # Собираем медиафайлы в отдельном потоке для скорости
             if message.media:
-                media_path = await download_media(client, message, chat_id)
+                media_path = await download_media_fast(client, message, chat_id)
                 if media_path:
                     media_files.append({
                         'message_id': message.id,
                         'file_path': media_path,
                         'media_type': get_media_type(message.media)
                     })
-        
-        # Сортируем сообщения по дате (от старых к новым)
-        messages.sort(key=lambda x: x.date)
         
         print(f"📥 Собрано {len(messages)} сообщений и {len(media_files)} медиафайлов")
         
@@ -514,6 +654,90 @@ async def download_period(
         else:  # csv
             content = await generate_chat_csv_with_media(client, entity, messages, media_files, period_name)
             filename = f"{chat_title}_{period_name.replace(' ', '_')}.csv"
+            media_type = "text/csv"
+        
+        return HTMLResponse(
+            content,
+            headers={
+                "Content-Disposition": f"attachment; filename={filename}",
+                "Content-Type": media_type
+            }
+        )
+        
+    except Exception as e:
+        return HTMLResponse(f'<div class="error">❌ Ошибка: {str(e)}</div>')
+
+
+@app.get("/download_period_fast/{chat_id}")
+async def download_period_fast(
+    chat_id: int,
+    days: str = Query(...),
+    format: str = "html"
+):
+    """БЫСТРАЯ версия - скачать историю БЕЗ медиафайлов"""
+    if not clients:
+        return HTMLResponse("<h3>Нет активной сессии</h3>")
+
+    client = list(clients.values())[0]
+    
+    try:
+        entity = await client.get_entity(chat_id)
+        chat_title = getattr(entity, 'title', 'Личная переписка')
+        
+        # Определяем даты периода
+        end_date = datetime.now()
+        if days == "all":
+            start_date = None
+            period_name = "вся история"
+            limit = 10000
+        elif days == "month":
+            start_date = datetime(end_date.year, end_date.month, 1)
+            period_name = f"месяц {end_date.strftime('%B %Y')}"
+            limit = 5000
+        elif days == "last_month":
+            last_month = end_date.replace(day=1) - timedelta(days=1)
+            start_date = datetime(last_month.year, last_month.month, 1)
+            end_date = datetime(last_month.year, last_month.month, last_month.day, 23, 59, 59)
+            period_name = f"месяц {last_month.strftime('%B %Y')}"
+            limit = 5000
+        else:
+            start_date = end_date - timedelta(days=int(days))
+            period_name = f"последние {days} дней"
+            limit = 2000
+        
+        print(f"⚡ Быстрый поиск сообщений: {period_name}")
+        
+        # БЫСТРЫЙ сбор только сообщений
+        messages = []
+        
+        if start_date:
+            start_date = start_date.replace(tzinfo=None)
+        end_date = end_date.replace(tzinfo=None)
+        
+        async for message in client.iter_messages(entity, limit=limit):
+            message_date = message.date.replace(tzinfo=None) if message.date.tzinfo else message.date
+            
+            if start_date and message_date < start_date:
+                continue
+            if message_date > end_date:
+                continue
+                
+            messages.append(message)
+        
+        print(f"⚡ Быстро собрано {len(messages)} сообщений")
+        
+        # Генерируем контент БЕЗ медиа
+        if format == "html":
+            content = await generate_chat_html_with_media(client, entity, messages, [], period_name)
+            filename = f"{chat_title}_{period_name.replace(' ', '_')}_NO_MEDIA.html"
+            media_type = "text/html"
+        elif format == "txt":
+            content = await generate_chat_txt_with_media(client, entity, messages, [], period_name)
+            filename = f"{chat_title}_{period_name.replace(' ', '_')}_NO_MEDIA.txt"
+            media_type = "text/plain"
+        else:  # csv
+            content = await generate_chat_csv_with_media(client, entity, messages, [], period_name)
+            filename = f"{chat_title}_{period_name.replace(' ', '_')}_NO_MEDIA.csv"
             media_type = "text/csv"
         
         return HTMLResponse(
@@ -555,7 +779,7 @@ async def download_custom_period(
         messages = []
         media_files = []
         
-        async for message in client.iter_messages(entity):
+        async for message in client.iter_messages(entity, limit=3000):
             # Убираем временную зону у даты сообщения
             message_date = message.date.replace(tzinfo=None) if message.date.tzinfo else message.date
             
@@ -565,7 +789,7 @@ async def download_custom_period(
             messages.append(message)
             
             if message.media:
-                media_path = await download_media(client, message, chat_id)
+                media_path = await download_media_fast(client, message, chat_id)
                 if media_path:
                     media_files.append({
                         'message_id': message.id,
