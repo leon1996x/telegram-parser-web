@@ -333,6 +333,67 @@ async def download_media_fast(client, message, chat_id):
         print(f"⚠️ Не удалось скачать медиа {message.id}: {safe_error_message(e)}")
         return None
 
+async def get_chat_participants(client, entity, limit=1000):
+    """Получает список участников чата, если доступно, иначе из сообщений"""
+    participants = {}
+    
+    try:
+        # Пытаемся получить полный список участников
+        if hasattr(entity, 'participants_count'):
+            print(f"🔍 Получение списка участников для {getattr(entity, 'title', 'чата')}...")
+            try:
+                async for user in client.iter_participants(entity, limit=200):
+                    participants[user.id] = {
+                        'id': user.id,
+                        'username': user.username or '',
+                        'first_name': user.first_name or '',
+                        'last_name': user.last_name or '',
+                        'phone': user.phone or '',
+                        'source': 'participants_list'
+                    }
+                print(f"✅ Получено {len(participants)} участников из списка")
+                return participants
+            except Exception as e:
+                print(f"⚠️ Не удалось получить список участников: {safe_error_message(e)}")
+                print("🔄 Пробуем собрать участников из истории сообщений...")
+    
+    except Exception as e:
+        print(f"⚠️ Ошибка при проверке участников: {safe_error_message(e)}")
+    
+    # Если не удалось получить список участников, собираем из сообщений
+    print(f"🔍 Сбор участников из истории сообщений для {getattr(entity, 'title', 'чата')}...")
+    message_count = 0
+    async for message in client.iter_messages(entity, limit=limit):
+        if message.sender:
+            sender_id = message.sender.id
+            if sender_id not in participants:
+                participants[sender_id] = {
+                    'id': sender_id,
+                    'username': getattr(message.sender, 'username', ''),
+                    'first_name': getattr(message.sender, 'first_name', ''),
+                    'last_name': getattr(message.sender, 'last_name', ''),
+                    'phone': getattr(message.sender, 'phone', ''),
+                    'source': 'from_messages'
+                }
+        message_count += 1
+        if message_count >= limit:
+            break
+    
+    print(f"✅ Собрано {len(participants)} участников из {message_count} сообщений")
+    return participants
+
+def get_chat_link(entity):
+    """Генерирует ссылку на чат"""
+    try:
+        if hasattr(entity, 'username') and entity.username:
+            return f"https://t.me/{entity.username}"
+        elif hasattr(entity, 'id'):
+            return f"https://t.me/c/{str(entity.id).replace('-100', '')}"
+        else:
+            return "Ссылка недоступна"
+    except:
+        return "Ссылка недоступна"
+
 @app.get("/chats", response_class=HTMLResponse)
 async def get_chats(offset: int = Query(0, ge=0)):
     """Вывод чатов с аватарками и последними сообщениями"""
@@ -367,6 +428,14 @@ async def get_chats(offset: int = Query(0, ge=0)):
         # Получаем дату создания чата
         creation_date = await get_chat_creation_date(client, entity)
         creation_date_str = creation_date.strftime("%d.%m.%Y") if creation_date else "Неизвестно"
+
+        # Получаем ссылку на чат
+        chat_link = get_chat_link(entity)
+
+        # Получаем количество участников
+        participants_count = "Неизвестно"
+        if hasattr(entity, 'participants_count'):
+            participants_count = entity.participants_count
 
         # Безопасное извлечение последнего сообщения
         if dialog.message and getattr(dialog.message, "message", None):
@@ -410,6 +479,8 @@ async def get_chats(offset: int = Query(0, ge=0)):
                 </div>
                 <div class="chat-meta">
                     <span class="chat-creation">📅 Создан: {creation_date_str}</span>
+                    <span class="chat-link">🔗 <a href="{chat_link}" target="_blank">Ссылка на чат</a></span>
+                    <span class="chat-participants">👥 Участников: {participants_count}</span>
                     <span class="chat-last-msg">💬 {safe_message}</span>
                 </div>
                 <div class="chat-time">{message_time}</div>
@@ -482,6 +553,16 @@ def create_download_buttons(chat_id, chat_title):
             </div>
         </div>
         
+        <div class="participants-download">
+            <h4>👥 Скачать список участников:</h4>
+            <div class="format-buttons">
+                <a class="btn-download small" href="/download_participants/{chat_id}?format=html">HTML</a>
+                <a class="btn-download small" href="/download_participants/{chat_id}?format=json">JSON</a>
+                <a class="btn-download small" href="/download_participants/{chat_id}?format=csv">CSV</a>
+                <a class="btn-download small" href="/download_participants/{chat_id}?format=txt">TXT</a>
+            </div>
+        </div>
+        
         <p class="note">💡 Фото, видео и аудио будут встроены в HTML файл</p>
         <p class="note">⚡ Для больших периодов скачивание может занять несколько минут</p>
     </div>
@@ -522,6 +603,11 @@ async def view_chat(chat_id: int, offset_id: int = Query(0, ge=0)):
         entity = await client.get_entity(chat_id)
         chat_title = getattr(entity, 'title', 'Личная переписка')
         creation_date = await get_chat_creation_date(client, entity)
+        chat_link = get_chat_link(entity)
+        
+        # Получаем участников
+        participants = await get_chat_participants(client, entity, limit=100)
+        participants_count = len(participants)
         
         # Получаем сообщения
         messages = []
@@ -582,6 +668,22 @@ async def view_chat(chat_id: int, offset_id: int = Query(0, ge=0)):
         # 📅 УМНЫЕ КНОПКИ СКАЧИВАНИЯ С ПЕРИОДАМИ
         download_buttons = create_download_buttons(chat_id, chat_title)
         
+        # Информация об участниках
+        participants_from_list = sum(1 for p in participants.values() if p['source'] == 'participants_list')
+        participants_from_messages = sum(1 for p in participants.values() if p['source'] == 'from_messages')
+        
+        participants_info = f"""
+        <div class="participants-info">
+            <h3>👥 Информация об участниках:</h3>
+            <div class="participants-stats">
+                <p><strong>Всего участников:</strong> {participants_count}</p>
+                <p><strong>Из списка участников:</strong> {participants_from_list}</p>
+                <p><strong>Из истории сообщений:</strong> {participants_from_messages}</p>
+                <p><strong>С @username:</strong> {sum(1 for p in participants.values() if p['username'])}</p>
+            </div>
+        </div>
+        """
+        
         html = f"""
         <html>
         <head>
@@ -595,8 +697,10 @@ async def view_chat(chat_id: int, offset_id: int = Query(0, ge=0)):
                     <span>📅 Создан: {creation_date.strftime('%d.%m.%Y') if creation_date else 'Неизвестно'}</span>
                     <span>🆔 ID: {chat_id}</span>
                     <span>💬 Сообщений: {len(messages)}</span>
+                    <span>🔗 <a href="{chat_link}" target="_blank">Ссылка на чат</a></span>
                 </div>
                 
+                {participants_info}
                 {download_buttons}
                 
                 <div class="custom-period">
@@ -639,13 +743,9 @@ async def view_chat(chat_id: int, offset_id: int = Query(0, ge=0)):
     except Exception as e:
         return HTMLResponse(f'<div class="error">❌ Ошибка: {safe_error_message(e)}</div>')
 
-@app.get("/download_period/{chat_id}")
-async def download_period(
-    chat_id: int,
-    days: str = Query(...),
-    format: str = "html"
-):
-    """Скачать историю за определенный период с медиафайлами - ОПТИМИЗИРОВАННАЯ"""
+@app.get("/download_participants/{chat_id}")
+async def download_participants(chat_id: int, format: str = "html"):
+    """Скачать список участников чата"""
     if not clients:
         return HTMLResponse("<h3>Нет активной сессии</h3>")
 
@@ -654,91 +754,30 @@ async def download_period(
     try:
         entity = await client.get_entity(chat_id)
         chat_title = getattr(entity, 'title', 'Личная переписка')
+        chat_link = get_chat_link(entity)
+        
+        # Получаем участников
+        participants = await get_chat_participants(client, entity, limit=500)
         
         # Создаем безопасное имя файла
-        safe_chat_title = safe_filename(chat_title)
-        if not safe_chat_title:
-            safe_chat_title = f"chat_{chat_id}"
+        safe_chat_title = safe_filename(chat_title) or f"chat_{chat_id}"
         
-        # Определяем даты периода
-        end_date = datetime.now()
-        if days == "all":
-            start_date = None
-            period_name = "all_history"
-            period_display = "вся история"
-            limit = 5000
-        elif days == "month":
-            start_date = datetime(end_date.year, end_date.month, 1)
-            period_name = f"month_{end_date.strftime('%Y_%m')}"
-            period_display = f"месяц {end_date.strftime('%B %Y')}"
-            limit = 2000
-        elif days == "last_month":
-            last_month = end_date.replace(day=1) - timedelta(days=1)
-            start_date = datetime(last_month.year, last_month.month, 1)
-            end_date = datetime(last_month.year, last_month.month, last_month.day, 23, 59, 59)
-            period_name = f"month_{last_month.strftime('%Y_%m')}"
-            period_display = f"месяц {last_month.strftime('%B %Y')}"
-            limit = 2000
-        else:
-            start_date = end_date - timedelta(days=int(days))
-            period_name = f"last_{days}_days"
-            period_display = f"последние {days} дней"
-            limit = 1000
-        
-        print(f"🔍 Поиск сообщений за период: {period_display}")
-        
-        # Собираем сообщения за период ОПТИМИЗИРОВАННО
-        messages = []
-        media_files = []
-        
-        # Убираем временную зону для сравнения
-        if start_date:
-            start_date = start_date.replace(tzinfo=None)
-        end_date = end_date.replace(tzinfo=None)
-        
-        # Используем batch processing для скорости
-        message_count = 0
-        
-        async for message in client.iter_messages(entity, limit=limit):
-            if message_count >= limit:
-                break
-                
-            # Убираем временную зону у даты сообщения
-            message_date = message.date.replace(tzinfo=None) if message.date.tzinfo else message.date
-            
-            if start_date and message_date < start_date:
-                continue
-            if message_date > end_date:
-                continue
-                
-            messages.append(message)
-            message_count += 1
-            
-            # Собираем медиафайлы в отдельном потоке для скорости
-            if message.media:
-                media_path = await download_media_fast(client, message, chat_id)
-                if media_path:
-                    media_files.append({
-                        'message_id': message.id,
-                        'file_path': media_path,
-                        'media_type': get_media_type(message.media)
-                    })
-        
-        print(f"📥 Собрано {len(messages)} сообщений и {len(media_files)} медиафайлов")
-        
-        # Генерируем контент
         if format == "html":
-            content = await generate_chat_html_with_media(client, entity, messages, media_files, period_display)
-            filename = f"{safe_chat_title}_{period_name}.html"
+            content = generate_participants_html(chat_title, chat_link, participants)
+            filename = f"{safe_chat_title}_participants.html"
             media_type = "text/html; charset=utf-8"
-        elif format == "txt":
-            content = await generate_chat_txt_with_media(client, entity, messages, media_files, period_display)
-            filename = f"{safe_chat_title}_{period_name}.txt"
-            media_type = "text/plain; charset=utf-8"
-        else:  # csv
-            content = await generate_chat_csv_with_media(client, entity, messages, media_files, period_display)
-            filename = f"{safe_chat_title}_{period_name}.csv"
+        elif format == "json":
+            content = generate_participants_json(participants)
+            filename = f"{safe_chat_title}_participants.json"
+            media_type = "application/json; charset=utf-8"
+        elif format == "csv":
+            content = generate_participants_csv(participants)
+            filename = f"{safe_chat_title}_participants.csv"
             media_type = "text/csv; charset=utf-8"
+        else:  # txt
+            content = generate_participants_txt(chat_title, chat_link, participants)
+            filename = f"{safe_chat_title}_participants.txt"
+            media_type = "text/plain; charset=utf-8"
         
         # Кодируем имя файла для безопасной загрузки
         encoded_filename = urllib.parse.quote(filename)
@@ -754,312 +793,130 @@ async def download_period(
     except Exception as e:
         return HTMLResponse(f'<div class="error">❌ Ошибка: {safe_error_message(e)}</div>')
 
-@app.get("/download_period_fast/{chat_id}")
-async def download_period_fast(
-    chat_id: int,
-    days: str = Query(...),
-    format: str = "html"
-):
-    """БЫСТРАЯ версия - скачать историю БЕЗ медиафайлов"""
-    if not clients:
-        return HTMLResponse("<h3>Нет активной сессии</h3>")
-
-    client = list(clients.values())[0]
+def generate_participants_html(chat_title, chat_link, participants):
+    """Генерирует HTML файл со списком участников"""
+    participants_list = list(participants.values())
+    participants_list.sort(key=lambda x: x['username'] or x['first_name'] or '')
     
-    try:
-        entity = await client.get_entity(chat_id)
-        chat_title = getattr(entity, 'title', 'Личная переписка')
+    participants_html = ""
+    for participant in participants_list:
+        username = f"@{participant['username']}" if participant['username'] else "нет username"
+        full_name = f"{participant['first_name']} {participant['last_name']}".strip()
+        if not full_name:
+            full_name = "Не указано"
         
-        # Создаем безопасное имя файла
-        safe_chat_title = safe_filename(chat_title)
-        if not safe_chat_title:
-            safe_chat_title = f"chat_{chat_id}"
-        
-        # Определяем даты периода
-        end_date = datetime.now()
-        if days == "all":
-            start_date = None
-            period_name = "all_history"
-            period_display = "вся история"
-            limit = 10000
-        elif days == "month":
-            start_date = datetime(end_date.year, end_date.month, 1)
-            period_name = f"month_{end_date.strftime('%Y_%m')}"
-            period_display = f"месяц {end_date.strftime('%B %Y')}"
-            limit = 5000
-        elif days == "last_month":
-            last_month = end_date.replace(day=1) - timedelta(days=1)
-            start_date = datetime(last_month.year, last_month.month, 1)
-            end_date = datetime(last_month.year, last_month.month, last_month.day, 23, 59, 59)
-            period_name = f"month_{last_month.strftime('%Y_%m')}"
-            period_display = f"месяц {last_month.strftime('%B %Y')}"
-            limit = 5000
-        else:
-            start_date = end_date - timedelta(days=int(days))
-            period_name = f"last_{days}_days"
-            period_display = f"последние {days} дней"
-            limit = 2000
-        
-        print(f"⚡ Быстрый поиск сообщений: {period_display}")
-        
-        # БЫСТРЫЙ сбор только сообщений
-        messages = []
-        
-        if start_date:
-            start_date = start_date.replace(tzinfo=None)
-        end_date = end_date.replace(tzinfo=None)
-        
-        async for message in client.iter_messages(entity, limit=limit):
-            message_date = message.date.replace(tzinfo=None) if message.date.tzinfo else message.date
-            
-            if start_date and message_date < start_date:
-                continue
-            if message_date > end_date:
-                continue
-                
-            messages.append(message)
-        
-        print(f"⚡ Быстро собрано {len(messages)} сообщений")
-        
-        # Генерируем контент БЕЗ медиа
-        if format == "html":
-            content = await generate_chat_html_with_media(client, entity, messages, [], period_display)
-            filename = f"{safe_chat_title}_{period_name}_NO_MEDIA.html"
-            media_type = "text/html; charset=utf-8"
-        elif format == "txt":
-            content = await generate_chat_txt_with_media(client, entity, messages, [], period_display)
-            filename = f"{safe_chat_title}_{period_name}_NO_MEDIA.txt"
-            media_type = "text/plain; charset=utf-8"
-        else:  # csv
-            content = await generate_chat_csv_with_media(client, entity, messages, [], period_display)
-            filename = f"{safe_chat_title}_{period_name}_NO_MEDIA.csv"
-            media_type = "text/csv; charset=utf-8"
-        
-        # Кодируем имя файла для безопасной загрузки
-        encoded_filename = urllib.parse.quote(filename)
-        
-        return HTMLResponse(
-            content,
-            headers={
-                "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}",
-                "Content-Type": media_type
-            }
-        )
-        
-    except Exception as e:
-        return HTMLResponse(f'<div class="error">❌ Ошибка: {safe_error_message(e)}</div>')
-
-@app.get("/download_custom_period/{chat_id}")
-async def download_custom_period(
-    chat_id: int,
-    start_date: str = Query(...),
-    end_date: str = Query(...),
-    format: str = "html"
-):
-    """Скачать историю за кастомный период"""
-    if not clients:
-        return HTMLResponse("<h3>Нет активной сессии</h3>")
-
-    client = list(clients.values())[0]
-    
-    try:
-        entity = await client.get_entity(chat_id)
-        chat_title = getattr(entity, 'title', 'Личная переписка')
-        
-        # Создаем безопасное имя файла
-        safe_chat_title = safe_filename(chat_title)
-        if not safe_chat_title:
-            safe_chat_title = f"chat_{chat_id}"
-        
-        # Парсим даты (без временных зон)
-        start_dt = datetime.strptime(start_date, "%Y-%m-%d")
-        end_dt = datetime.strptime(end_date, "%Y-%m-%d").replace(hour=23, minute=59, second=59)
-        
-        period_name = f"{start_date}_to_{end_date}"
-        period_display = f"с {start_dt.strftime('%d.%m.%Y')} по {end_dt.strftime('%d.%m.%Y')}"
-        
-        # Собираем сообщения и медиа
-        messages = []
-        media_files = []
-        
-        async for message in client.iter_messages(entity, limit=3000):
-            # Убираем временную зону у даты сообщения
-            message_date = message.date.replace(tzinfo=None) if message.date.tzinfo else message.date
-            
-            if message_date < start_dt or message_date > end_dt:
-                continue
-                
-            messages.append(message)
-            
-            if message.media:
-                media_path = await download_media_fast(client, message, chat_id)
-                if media_path:
-                    media_files.append({
-                        'message_id': message.id,
-                        'file_path': media_path,
-                        'media_type': get_media_type(message.media)
-                    })
-        
-        # Сортируем сообщения по дате
-        messages.sort(key=lambda x: x.date)
-        
-        # Генерируем файл
-        if format == "html":
-            content = await generate_chat_html_with_media(client, entity, messages, media_files, period_display)
-            filename = f"{safe_chat_title}_{period_name}.html"
-            media_type = "text/html; charset=utf-8"
-        elif format == "txt":
-            content = await generate_chat_txt_with_media(client, entity, messages, media_files, period_display)
-            filename = f"{safe_chat_title}_{period_name}.txt"
-            media_type = "text/plain; charset=utf-8"
-        else:  # csv
-            content = await generate_chat_csv_with_media(client, entity, messages, media_files, period_display)
-            filename = f"{safe_chat_title}_{period_name}.csv"
-            media_type = "text/csv; charset=utf-8"
-        
-        # Кодируем имя файла для безопасной загрузки
-        encoded_filename = urllib.parse.quote(filename)
-        
-        return HTMLResponse(
-            content,
-            headers={
-                "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}",
-                "Content-Type": media_type
-            }
-        )
-        
-    except Exception as e:
-        return HTMLResponse(f'<div class="error">❌ Ошибка: {safe_error_message(e)}</div>')
-
-async def generate_chat_html_with_media(client, entity, messages, media_files, period_name):
-    """Генерирует HTML с встроенными медиафайлами"""
-    chat_title = getattr(entity, 'title', 'Личная переписка')
-    
-    # Создаем карту медиафайлов для быстрого доступа
-    media_map = {m['message_id']: m for m in media_files}
-    
-    messages_html = ""
-    for message in reversed(messages):
-        if message.out:
-            sender = "Вы"
-            sender_id = message.sender_id
-        else:
-            sender_obj = message.sender
-            if sender_obj:
-                # Безопасное экранирование текста
-                username = f"@{sender_obj.username}" if sender_obj.username else ""
-                sender = f"{username} (ID {sender_obj.id})"
-                sender_id = sender_obj.id
-            else:
-                sender = f"ID {message.sender_id}"
-                sender_id = message.sender_id
-        
-        # Обрабатываем контент с медиа
-        content = ""
-        if message.text:
-            # Экранируем HTML символы в тексте
-            content = message.text.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
-        
-        # Добавляем медиа если есть
-        if message.id in media_map:
-            media_info = media_map[message.id]
-            if "Фото" in media_info['media_type']:
-                content += f'<div class="media-container"><img src="{media_info["file_path"]}" class="media-content" alt="Фото"></div>'
-            elif "Видео" in media_info['media_type']:
-                content += f'<div class="media-container"><video controls class="media-content"><source src="{media_info["file_path"]}" type="video/mp4">Ваш браузер не поддерживает видео</video></div>'
-            elif "Аудио" in media_info['media_type']:
-                content += f'<div class="media-container"><audio controls class="media-content"><source src="{media_info["file_path"]}" type="audio/mpeg">Ваш браузер не поддерживает аудио</audio></div>'
-            else:
-                content += f'<div class="media-container"><a href="{media_info["file_path"]}" download>📎 {media_info["media_type"]}</a></div>'
-        
-        if not content:
-            content = "[Пустое сообщение]"
-        
-        messages_html += f"""
-        <div class="message {'outgoing' if message.out else 'incoming'}">
-            <div class="message-header">
-                <strong>{sender}</strong>
-                <span class="message-time">{message.date.strftime('%d.%m.%Y %H:%M:%S')}</span>
-            </div>
-            <div class="message-content">{content}</div>
-        </div>
+        participants_html += f"""
+        <tr>
+            <td>{participant['id']}</td>
+            <td>{username}</td>
+            <td>{full_name}</td>
+            <td>{participant['phone'] or 'Не указан'}</td>
+            <td>{participant['source']}</td>
+        </tr>
         """
     
-    html_content = f"""
+    return f"""
     <!DOCTYPE html>
     <html>
     <head>
         <meta charset="UTF-8">
-        <title>{chat_title} - {period_name}</title>
+        <title>Участники чата: {chat_title}</title>
         <style>
             body {{ font-family: Arial, sans-serif; margin: 20px; background: #f5f5f5; }}
-            .message {{ margin: 15px 0; padding: 15px; border-radius: 10px; background: white; box-shadow: 0 1px 3px rgba(0,0,0,0.1); }}
-            .outgoing {{ border-left: 4px solid #3b82f6; margin-left: 50px; }}
-            .incoming {{ border-left: 4px solid #10b981; margin-right: 50px; }}
-            .message-header {{ display: flex; justify-content: space-between; margin-bottom: 8px; }}
-            .message-time {{ color: #666; font-size: 0.9em; }}
-            .chat-header {{ background: white; padding: 25px; border-radius: 12px; margin-bottom: 20px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }}
+            .header {{ background: white; padding: 25px; border-radius: 12px; margin-bottom: 20px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }}
             .stats {{ background: #e8f5e8; padding: 12px; border-radius: 8px; margin: 15px 0; }}
-            .media-container {{ margin: 10px 0; }}
-            .media-content {{ max-width: 100%; max-height: 500px; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); }}
-            audio, video {{ width: 100%; max-width: 400px; }}
+            table {{ width: 100%; border-collapse: collapse; background: white; border-radius: 8px; overflow: hidden; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }}
+            th, td {{ padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }}
+            th {{ background: #3b82f6; color: white; }}
+            tr:hover {{ background: #f5f5f5; }}
+            .source-participants {{ background: #e8f5e8; }}
+            .source-messages {{ background: #fff3cd; }}
         </style>
     </head>
     <body>
-        <div class="chat-header">
-            <h1>💬 {chat_title}</h1>
+        <div class="header">
+            <h1>👥 Участники чата: {chat_title}</h1>
             <div class="stats">
-                <strong>📊 Статистика:</strong> {len(messages)} сообщений, {len(media_files)} медиафайлов
+                <strong>📊 Статистика:</strong> {len(participants)} участников
             </div>
-            <p><strong>📅 Период:</strong> {period_name}</p>
+            <p><strong>🔗 Ссылка на чат:</strong> <a href="{chat_link}" target="_blank">{chat_link}</a></p>
             <p><strong>📤 Экспорт:</strong> {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}</p>
         </div>
-        <div class="messages">
-            {messages_html}
-        </div>
+        
+        <table>
+            <thead>
+                <tr>
+                    <th>ID Telegram</th>
+                    <th>@username</th>
+                    <th>Имя и фамилия</th>
+                    <th>Телефон</th>
+                    <th>Источник</th>
+                </tr>
+            </thead>
+            <tbody>
+                {participants_html}
+            </tbody>
+        </table>
     </body>
     </html>
     """
-    
-    return html_content
 
-async def generate_chat_txt_with_media(client, entity, messages, media_files, period_name):
-    """Генерирует TXT файл с информацией о медиа"""
-    chat_title = getattr(entity, 'title', 'Личная переписка')
+def generate_participants_json(participants):
+    """Генерирует JSON файл со списком участников"""
+    participants_list = list(participants.values())
+    participants_list.sort(key=lambda x: x['username'] or x['first_name'] or '')
     
-    content = f"Чат: {chat_title}\n"
-    content += f"Период: {period_name}\n"
-    content += f"Сообщений: {len(messages)}\n"
-    content += f"Медиафайлов: {len(media_files)}\n"
+    return json.dumps({
+        'export_date': datetime.now().strftime('%d.%m.%Y %H:%M:%S'),
+        'total_participants': len(participants_list),
+        'participants': participants_list
+    }, ensure_ascii=False, indent=2)
+
+def generate_participants_csv(participants):
+    """Генерирует CSV файл со списком участников"""
+    participants_list = list(participants.values())
+    participants_list.sort(key=lambda x: x['username'] or x['first_name'] or '')
+    
+    output = io.StringIO()
+    writer = csv.writer(output)
+    
+    writer.writerow(['ID Telegram', '@username', 'Имя', 'Фамилия', 'Телефон', 'Источник'])
+    
+    for participant in participants_list:
+        writer.writerow([
+            participant['id'],
+            participant['username'] or '',
+            participant['first_name'] or '',
+            participant['last_name'] or '',
+            participant['phone'] or '',
+            participant['source']
+        ])
+    
+    return output.getvalue()
+
+def generate_participants_txt(chat_title, chat_link, participants):
+    """Генерирует TXT файл со списком участников"""
+    participants_list = list(participants.values())
+    participants_list.sort(key=lambda x: x['username'] or x['first_name'] or '')
+    
+    content = f"Участники чата: {chat_title}\n"
+    content += f"Ссылка: {chat_link}\n"
+    content += f"Всего участников: {len(participants_list)}\n"
     content += f"Экспорт: {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}\n"
-    content += "="*60 + "\n\n"
+    content += "="*80 + "\n\n"
     
-    for message in reversed(messages):
-        if message.out:
-            sender = "Вы"
-            sender_id = message.sender_id
-        else:
-            sender_obj = message.sender
-            if sender_obj:
-                username = f"@{sender_obj.username}" if sender_obj.username else ""
-                sender = f"{username} (ID {sender_obj.id})"
-                sender_id = sender_obj.id
-            else:
-                sender = f"ID {message.sender_id}"
-                sender_id = message.sender_id
+    for participant in participants_list:
+        username = f"@{participant['username']}" if participant['username'] else "нет username"
+        full_name = f"{participant['first_name']} {participant['last_name']}".strip()
+        if not full_name:
+            full_name = "Не указано"
         
-        # Добавляем информацию о медиа
-        message_text = ""
-        if message.text:
-            message_text = message.text
-        
-        # Проверяем есть ли медиа для этого сообщения
-        has_media = any(m['message_id'] == message.id for m in media_files)
-        if has_media:
-            media_info = next(m for m in media_files if m['message_id'] == message.id)
-            message_text += f" [{media_info['media_type']}]"
-            
-        content += f"[{message.date.strftime('%d.%m.%Y %H:%M:%S')}] {sender}: {message_text}\n"
+        content += f"ID: {participant['id']}\n"
+        content += f"Username: {username}\n"
+        content += f"Имя: {full_name}\n"
+        content += f"Телефон: {participant['phone'] or 'Не указан'}\n"
+        content += f"Источник: {participant['source']}\n"
+        content += "-" * 40 + "\n"
     
     return content
 
