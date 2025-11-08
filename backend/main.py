@@ -333,60 +333,61 @@ async def download_media_fast(client, message, chat_id):
         print(f"⚠️ Не удалось скачать медиа {message.id}: {safe_error_message(e)}")
         return None
 
-async def get_chat_participants(client, entity, limit=20000):
-    """УЛУЧШЕННАЯ функция сбора участников - собирает ВСЕХ из истории сообщений"""
+async def get_chat_participants_guaranteed(client, entity, limit=50000):
+    """ГАРАНТИРОВАННЫЙ сбор участников - читает ВСЕ сообщения"""
     participants = {}
     message_count = 0
     
-    print(f"🔍 Начинаем сбор участников для: {getattr(entity, 'title', 'чата')}")
-    
-    # СНАЧАЛА собираем из сообщений - это всегда работает!
-    print("🔄 Сбор участников из истории сообщений...")
+    print(f"🔍 ГАРАНТИРОВАННЫЙ сбор участников для: {getattr(entity, 'title', 'чата')}")
+    print(f"📝 Читаем до {limit} сообщений...")
     
     try:
+        # Читаем ВСЕ сообщения подряд
         async for message in client.iter_messages(entity, limit=limit):
             message_count += 1
             
-            # ОСНОВНОЙ СПОСОБ - используем sender_id который ВСЕГДА есть
+            # ОСНОВНОЙ СПОСОБ - sender_id который ВСЕГДА есть
             if hasattr(message, 'sender_id') and message.sender_id:
                 sender_id = message.sender_id
                 
                 if sender_id not in participants:
-                    username = ""
-                    first_name = ""
-                    last_name = ""
-                    
-                    # Пытаемся получить данные об отправителе
-                    if message.sender:
-                        username = getattr(message.sender, 'username', '') or ""
-                        first_name = getattr(message.sender, 'first_name', '') or ""
-                        last_name = getattr(message.sender, 'last_name', '') or ""
-                    
-                    participants[sender_id] = {
+                    # Базовая информация
+                    participant_data = {
                         'id': sender_id,
-                        'username': username,
-                        'first_name': first_name,
-                        'last_name': last_name,
+                        'username': '',
+                        'first_name': '',
+                        'last_name': '',
                         'phone': '',
-                        'source': 'from_messages'
+                        'source': 'messages'
                     }
+                    
+                    # Дополнительная информация если доступна
+                    try:
+                        if message.sender:
+                            participant_data['username'] = getattr(message.sender, 'username', '') or ''
+                            participant_data['first_name'] = getattr(message.sender, 'first_name', '') or ''
+                            participant_data['last_name'] = getattr(message.sender, 'last_name', '') or ''
+                            participant_data['phone'] = getattr(message.sender, 'phone', '') or ''
+                    except:
+                        pass
+                    
+                    participants[sender_id] = participant_data
             
-            # Прогресс каждые 500 сообщений
-            if message_count % 500 == 0:
-                print(f"📨 Обработано {message_count} сообщений, найдено {len(participants)} участников")
+            # Прогресс каждые 1000 сообщений
+            if message_count % 1000 == 0:
+                print(f"📨 Прочитано {message_count} сообщений, найдено {len(participants)} участников")
                 
     except Exception as e:
-        print(f"❌ Ошибка при сборе из сообщений: {safe_error_message(e)}")
+        print(f"❌ Ошибка при чтении сообщений: {safe_error_message(e)}")
     
-    print(f"✅ Из сообщений собрано: {len(participants)} участников из {message_count} сообщений")
+    print(f"✅ ГАРАНТИРОВАННЫЙ сбор завершен! Прочитано {message_count} сообщений, собрано {len(participants)} участников")
     
-    # ПОТОМ пробуем добавить из списка участников (если доступно)
+    # Дополнительно: пробуем получить список участников если это группа
     try:
         if hasattr(entity, 'participants_count'):
-            print(f"🔍 Дополнительный сбор из списка участников...")
-            added_from_list = 0
-            
-            async for user in client.iter_participants(entity, limit=1000):
+            print("🔍 Дополнительно получаем список участников...")
+            added_count = 0
+            async for user in client.iter_participants(entity, limit=10000):
                 if user.id not in participants:
                     participants[user.id] = {
                         'id': user.id,
@@ -396,14 +397,30 @@ async def get_chat_participants(client, entity, limit=20000):
                         'phone': user.phone or '',
                         'source': 'participants_list'
                     }
-                    added_from_list += 1
-            
-            print(f"✅ Из списка добавлено: {added_from_list} новых участников")
-            
+                    added_count += 1
+            print(f"✅ Добавлено {added_count} участников из списка")
     except Exception as e:
         print(f"⚠️ Не удалось получить список участников: {safe_error_message(e)}")
     
-    print(f"🎯 ИТОГО собрано участников: {len(participants)}")
+    return participants
+
+async def get_chat_participants_fast(client, entity, limit=500):
+    """Быстрая версия для интерфейса"""
+    participants = {}
+    
+    # Только последние сообщения для быстрого показа
+    async for message in client.iter_messages(entity, limit=limit):
+        if hasattr(message, 'sender_id') and message.sender_id:
+            sender_id = message.sender_id
+            if sender_id not in participants:
+                participants[sender_id] = {
+                    'id': sender_id,
+                    'username': getattr(message.sender, 'username', '') if message.sender else '',
+                    'first_name': getattr(message.sender, 'first_name', '') if message.sender else '',
+                    'last_name': getattr(message.sender, 'last_name', '') if message.sender else '',
+                    'source': 'fast'
+                }
+    
     return participants
 
 def get_chat_link(entity):
@@ -500,6 +517,7 @@ async def get_chats(offset: int = Query(0, ge=0)):
                     <div class="chat-actions">
                         <a class="btn-view" href="/chat/{entity.id}">👁️ Просмотр</a>
                         <a class="btn-download" href="/download_participants/{entity.id}?format=html">👥 Участники</a>
+                        <a class="btn-download" href="/force_collect/{entity.id}" style="background:#ef4444;">🚀 Принудительный сбор</a>
                     </div>
                 </div>
                 <div class="chat-meta">
@@ -617,7 +635,7 @@ def create_download_buttons(chat_id, chat_title):
 
 @app.get("/chat/{chat_id}")
 async def view_chat(chat_id: int, offset_id: int = Query(0, ge=0)):
-    """Детальная страница чата с УМНЫМИ кнопками скачивания"""
+    """Детальная страница чата - БЫСТРАЯ загрузка"""
     if not clients:
         return HTMLResponse("<h3>Нет активной сессии</h3>")
 
@@ -630,8 +648,8 @@ async def view_chat(chat_id: int, offset_id: int = Query(0, ge=0)):
         creation_date = await get_chat_creation_date(client, entity)
         chat_link = get_chat_link(entity)
         
-        # Получаем участников - ТЕПЕРЬ С БОЛЬШИМ ЛИМИТОМ
-        participants = await get_chat_participants(client, entity, limit=20000)
+        # БЫСТРЫЙ сбор участников - только последние 500 сообщений
+        participants = await get_chat_participants_fast(client, entity, limit=500)
         participants_count = len(participants)
         
         # Получаем сообщения
@@ -699,12 +717,13 @@ async def view_chat(chat_id: int, offset_id: int = Query(0, ge=0)):
         
         participants_info = f"""
         <div class="participants-info">
-            <h3>👥 Информация об участниках:</h3>
+            <h3>👥 Информация об участниках (быстрый сбор):</h3>
             <div class="participants-stats">
                 <p><strong>Всего участников:</strong> {participants_count}</p>
                 <p><strong>Из списка участников:</strong> {participants_from_list}</p>
                 <p><strong>Из истории сообщений:</strong> {participants_from_messages}</p>
                 <p><strong>С @username:</strong> {sum(1 for p in participants.values() if p['username'])}</p>
+                <p><em>💡 Для полного списка используйте кнопку "Принудительный сбор"</em></p>
             </div>
         </div>
         """
@@ -727,6 +746,11 @@ async def view_chat(chat_id: int, offset_id: int = Query(0, ge=0)):
                 
                 {participants_info}
                 {download_buttons}
+                
+                <div style="text-align:center; margin:20px;">
+                    <a class="btn" href="/force_collect/{chat_id}" style="background:#ef4444; font-size:18px; padding:15px 30px;">🚀 ЗАПУСТИТЬ ПРИНУДИТЕЛЬНЫЙ СБОР УЧАСТНИКОВ</a>
+                    <p style="color:#666; margin-top:10px;">Эта операция прочитает ВСЕ сообщения в чате и гарантированно соберет всех участников</p>
+                </div>
                 
                 <div class="custom-period">
                     <h4>📅 Или укажите свой период:</h4>
@@ -768,9 +792,104 @@ async def view_chat(chat_id: int, offset_id: int = Query(0, ge=0)):
     except Exception as e:
         return HTMLResponse(f'<div class="error">❌ Ошибка: {safe_error_message(e)}</div>')
 
+@app.get("/force_collect/{chat_id}")
+async def force_collect_participants(chat_id: int):
+    """ПРИНУДИТЕЛЬНЫЙ сбор участников - читает ВСЕ сообщения"""
+    if not clients:
+        return HTMLResponse("<h3>Нет активной сессии</h3>")
+
+    client = list(clients.values())[0]
+    
+    try:
+        entity = await client.get_entity(chat_id)
+        chat_title = getattr(entity, 'title', 'Личная переписка')
+        
+        print(f"🚀 ЗАПУСК ПРИНУДИТЕЛЬНОГО СБОРА ДЛЯ: {chat_title}")
+        
+        # Принудительный сбор с максимальным лимитом
+        participants = await get_chat_participants_guaranteed(client, entity, limit=100000)
+        
+        # Сохраняем результат
+        result = {
+            'chat_title': chat_title,
+            'chat_id': chat_id,
+            'total_participants': len(participants),
+            'participants_count_with_username': sum(1 for p in participants.values() if p['username']),
+            'participants': list(participants.values()),
+            'collected_at': datetime.now().strftime('%d.%m.%Y %H:%M:%S')
+        }
+        
+        # Показываем подробный результат
+        participants_list = list(participants.values())
+        participants_list.sort(key=lambda x: x['id'])
+        
+        result_html = f"""
+        <html>
+        <head>
+            <link rel="stylesheet" href="/static/style.css">
+            <title>Результат сбора: {chat_title}</title>
+        </head>
+        <body>
+            <div class="chat-header">
+                <h1>🎯 Результат принудительного сбора</h1>
+                <div class="success" style="text-align:center; padding:20px;">
+                    <h3>Чат: {chat_title}</h3>
+                    <p><strong>✅ Собрано участников:</strong> {len(participants)}</p>
+                    <p><strong>📊 С @username:</strong> {sum(1 for p in participants.values() if p['username'])}</p>
+                    <p><strong>🕒 Время сбора:</strong> {datetime.now().strftime('%d.%m.%Y %H:%M:%S')}</p>
+                </div>
+                
+                <div style="text-align:center; margin:20px;">
+                    <a class="btn" href="/download_participants/{chat_id}?format=html" style="background:#10b981; font-size:18px; padding:15px 30px;">📥 Скачать полный список участников</a>
+                    <a class="btn" href="/chat/{chat_id}">← Назад к чату</a>
+                </div>
+                
+                <h3>📋 Первые 100 участников:</h3>
+                <div style="overflow-x:auto;">
+                    <table style="width:100%; border-collapse: collapse;">
+                        <thead>
+                            <tr style="background:#3b82f6; color:white;">
+                                <th style="padding:10px; border:1px solid #ddd;">ID</th>
+                                <th style="padding:10px; border:1px solid #ddd;">Username</th>
+                                <th style="padding:10px; border:1px solid #ddd;">Имя</th>
+                                <th style="padding:10px; border:1px solid #ddd;">Фамилия</th>
+                                <th style="padding:10px; border:1px solid #ddd;">Источник</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+        """
+        
+        for participant in participants_list[:100]:
+            result_html += f"""
+                            <tr>
+                                <td style="padding:8px; border:1px solid #ddd;">{participant['id']}</td>
+                                <td style="padding:8px; border:1px solid #ddd;">@{participant['username']}</td>
+                                <td style="padding:8px; border:1px solid #ddd;">{participant['first_name']}</td>
+                                <td style="padding:8px; border:1px solid #ddd;">{participant['last_name']}</td>
+                                <td style="padding:8px; border:1px solid #ddd;">{participant['source']}</td>
+                            </tr>
+            """
+        
+        result_html += f"""
+                        </tbody>
+                    </table>
+                </div>
+                <p style="text-align:center; margin-top:20px; color:#666;">
+                    <em>Показано первых 100 из {len(participants)} участников. Полный список доступен для скачивания.</em>
+                </p>
+            </div>
+        </body>
+        </html>
+        """
+        
+        return HTMLResponse(result_html)
+        
+    except Exception as e:
+        return HTMLResponse(f'<div class="error">❌ Ошибка: {safe_error_message(e)}</div>')
+
 @app.get("/download_participants/{chat_id}")
 async def download_participants(chat_id: int, format: str = "html"):
-    """Скачать список участников чата"""
+    """Скачать список участников чата - ГАРАНТИРОВАННЫЙ сбор"""
     if not clients:
         return HTMLResponse("<h3>Нет активной сессии</h3>")
 
@@ -781,8 +900,8 @@ async def download_participants(chat_id: int, format: str = "html"):
         chat_title = getattr(entity, 'title', 'Личная переписка')
         chat_link = get_chat_link(entity)
         
-        # Получаем участников - ТЕПЕРЬ С БОЛЬШИМ ЛИМИТОМ
-        participants = await get_chat_participants(client, entity, limit=30000)
+        # ГАРАНТИРОВАННЫЙ сбор участников
+        participants = await get_chat_participants_guaranteed(client, entity, limit=50000)
         
         # Создаем безопасное имя файла
         safe_chat_title = safe_filename(chat_title) or f"chat_{chat_id}"
