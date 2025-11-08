@@ -15,6 +15,7 @@ from fastapi import FastAPI, Form, UploadFile, Query, Request
 from fastapi.responses import HTMLResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from telethon import TelegramClient
+from telethon.tl.types import PeerChannel, PeerChat
 import os
 import shutil
 from datetime import datetime, timedelta
@@ -634,7 +635,7 @@ def create_download_buttons(chat_id, chat_title):
     return buttons_html
 
 @app.get("/chat/{chat_id}")
-async def view_chat(chat_id: int, offset_id: int = Query(0, ge=0)):
+async def view_chat(chat_id: str, offset_id: int = Query(0, ge=0)):
     """Детальная страница чата - БЫСТРАЯ загрузка"""
     if not clients:
         return HTMLResponse("<h3>Нет активной сессии</h3>")
@@ -643,7 +644,24 @@ async def view_chat(chat_id: int, offset_id: int = Query(0, ge=0)):
     limit = 50  # сообщений на страницу
 
     try:
-        entity = await client.get_entity(chat_id)
+        # Преобразуем chat_id в число
+        try:
+            chat_id_int = int(chat_id)
+        except ValueError:
+            return HTMLResponse('<div class="error">❌ Неверный ID чата</div>')
+
+        # Пробуем получить entity разными способами
+        try:
+            entity = await client.get_entity(chat_id_int)
+        except ValueError:
+            try:
+                entity = await client.get_entity(PeerChannel(chat_id_int))
+            except:
+                try:
+                    entity = await client.get_entity(PeerChat(chat_id_int))
+                except:
+                    return HTMLResponse('<div class="error">❌ Чат не найден</div>')
+        
         chat_title = getattr(entity, 'title', 'Личная переписка')
         creation_date = await get_chat_creation_date(client, entity)
         chat_link = get_chat_link(entity)
@@ -681,7 +699,7 @@ async def view_chat(chat_id: int, offset_id: int = Query(0, ge=0)):
                 content = message.text
             elif message.media:
                 media_type = get_media_type(message.media)
-                media_url = await download_media_fast(client, message, chat_id)
+                media_url = await download_media_fast(client, message, chat_id_int)
                 if media_url:
                     if "Фото" in media_type:
                         content = f'🖼️ <a href="{media_url}" target="_blank"><img src="{media_url}" class="media-preview" alt="Фото"></a>'
@@ -709,7 +727,7 @@ async def view_chat(chat_id: int, offset_id: int = Query(0, ge=0)):
             """
 
         # 📅 УМНЫЕ КНОПКИ СКАЧИВАНИЯ С ПЕРИОДАМИ
-        download_buttons = create_download_buttons(chat_id, chat_title)
+        download_buttons = create_download_buttons(chat_id_int, chat_title)
         
         # Информация об участниках
         participants_from_list = sum(1 for p in participants.values() if p['source'] == 'participants_list')
@@ -739,7 +757,7 @@ async def view_chat(chat_id: int, offset_id: int = Query(0, ge=0)):
                 <h1>💬 {chat_title}</h1>
                 <div class="chat-info-bar">
                     <span>📅 Создан: {creation_date.strftime('%d.%m.%Y') if creation_date else 'Неизвестно'}</span>
-                    <span>🆔 ID: {chat_id}</span>
+                    <span>🆔 ID: {chat_id_int}</span>
                     <span>💬 Сообщений: {len(messages)}</span>
                     <span>🔗 <a href="{chat_link}" target="_blank">Ссылка на чат</a></span>
                 </div>
@@ -748,13 +766,13 @@ async def view_chat(chat_id: int, offset_id: int = Query(0, ge=0)):
                 {download_buttons}
                 
                 <div style="text-align:center; margin:20px;">
-                    <a class="btn" href="/force_collect/{chat_id}" style="background:#ef4444; font-size:18px; padding:15px 30px;">🚀 ЗАПУСТИТЬ ПРИНУДИТЕЛЬНЫЙ СБОР УЧАСТНИКОВ</a>
+                    <a class="btn" href="/force_collect/{chat_id_int}" style="background:#ef4444; font-size:18px; padding:15px 30px;">🚀 ЗАПУСТИТЬ ПРИНУДИТЕЛЬНЫЙ СБОР УЧАСТНИКОВ</a>
                     <p style="color:#666; margin-top:10px;">Эта операция прочитает ВСЕ сообщения в чате и гарантированно соберет всех участников</p>
                 </div>
                 
                 <div class="custom-period">
                     <h4>📅 Или укажите свой период:</h4>
-                    <form action="/download_custom_period/{chat_id}" method="get" class="period-form">
+                    <form action="/download_custom_period/{chat_id_int}" method="get" class="period-form">
                         <div class="date-inputs">
                             <label>С:</label>
                             <input type="date" name="start_date" required>
@@ -780,10 +798,10 @@ async def view_chat(chat_id: int, offset_id: int = Query(0, ge=0)):
         """
         
         if messages:
-            html += f"<a class='btn' href='/chat/{chat_id}?offset_id={next_offset_id}'>⏩ Более старые</a>"
+            html += f"<a class='btn' href='/chat/{chat_id_int}?offset_id={next_offset_id}'>⏩ Более старые</a>"
         
         if offset_id > 0:
-            html += f"<a class='btn' href='/chat/{chat_id}?offset_id={max(offset_id - limit * 2, 0)}'>⏪ Более новые</a>"
+            html += f"<a class='btn' href='/chat/{chat_id_int}?offset_id={max(offset_id - limit * 2, 0)}'>⏪ Более новые</a>"
         
         html += "</div></body></html>"
         
@@ -793,7 +811,7 @@ async def view_chat(chat_id: int, offset_id: int = Query(0, ge=0)):
         return HTMLResponse(f'<div class="error">❌ Ошибка: {safe_error_message(e)}</div>')
 
 @app.get("/force_collect/{chat_id}")
-async def force_collect_participants(chat_id: int):
+async def force_collect_participants(chat_id: str):
     """ПРИНУДИТЕЛЬНЫЙ сбор участников - читает ВСЕ сообщения"""
     if not clients:
         return HTMLResponse("<h3>Нет активной сессии</h3>")
@@ -801,7 +819,24 @@ async def force_collect_participants(chat_id: int):
     client = list(clients.values())[0]
     
     try:
-        entity = await client.get_entity(chat_id)
+        # Преобразуем chat_id в число
+        try:
+            chat_id_int = int(chat_id)
+        except ValueError:
+            return HTMLResponse('<div class="error">❌ Неверный ID чата</div>')
+
+        # Пробуем получить entity разными способами
+        try:
+            entity = await client.get_entity(chat_id_int)
+        except ValueError:
+            try:
+                entity = await client.get_entity(PeerChannel(chat_id_int))
+            except:
+                try:
+                    entity = await client.get_entity(PeerChat(chat_id_int))
+                except:
+                    return HTMLResponse('<div class="error">❌ Чат не найден</div>')
+        
         chat_title = getattr(entity, 'title', 'Личная переписка')
         
         print(f"🚀 ЗАПУСК ПРИНУДИТЕЛЬНОГО СБОРА ДЛЯ: {chat_title}")
@@ -812,7 +847,7 @@ async def force_collect_participants(chat_id: int):
         # Сохраняем результат
         result = {
             'chat_title': chat_title,
-            'chat_id': chat_id,
+            'chat_id': chat_id_int,
             'total_participants': len(participants),
             'participants_count_with_username': sum(1 for p in participants.values() if p['username']),
             'participants': list(participants.values()),
@@ -840,8 +875,8 @@ async def force_collect_participants(chat_id: int):
                 </div>
                 
                 <div style="text-align:center; margin:20px;">
-                    <a class="btn" href="/download_participants/{chat_id}?format=html" style="background:#10b981; font-size:18px; padding:15px 30px;">📥 Скачать полный список участников</a>
-                    <a class="btn" href="/chat/{chat_id}">← Назад к чату</a>
+                    <a class="btn" href="/download_participants/{chat_id_int}?format=html" style="background:#10b981; font-size:18px; padding:15px 30px;">📥 Скачать полный список участников</a>
+                    <a class="btn" href="/chat/{chat_id_int}">← Назад к чату</a>
                 </div>
                 
                 <h3>📋 Первые 100 участников:</h3>
@@ -888,7 +923,7 @@ async def force_collect_participants(chat_id: int):
         return HTMLResponse(f'<div class="error">❌ Ошибка: {safe_error_message(e)}</div>')
 
 @app.get("/download_participants/{chat_id}")
-async def download_participants(chat_id: int, format: str = "html"):
+async def download_participants(chat_id: str, format: str = "html"):
     """Скачать список участников чата - ГАРАНТИРОВАННЫЙ сбор"""
     if not clients:
         return HTMLResponse("<h3>Нет активной сессии</h3>")
@@ -896,7 +931,24 @@ async def download_participants(chat_id: int, format: str = "html"):
     client = list(clients.values())[0]
     
     try:
-        entity = await client.get_entity(chat_id)
+        # Преобразуем chat_id в число
+        try:
+            chat_id_int = int(chat_id)
+        except ValueError:
+            return HTMLResponse('<div class="error">❌ Неверный ID чата</div>')
+
+        # Пробуем получить entity разными способами
+        try:
+            entity = await client.get_entity(chat_id_int)
+        except ValueError:
+            try:
+                entity = await client.get_entity(PeerChannel(chat_id_int))
+            except:
+                try:
+                    entity = await client.get_entity(PeerChat(chat_id_int))
+                except:
+                    return HTMLResponse('<div class="error">❌ Чат не найден</div>')
+        
         chat_title = getattr(entity, 'title', 'Личная переписка')
         chat_link = get_chat_link(entity)
         
@@ -904,7 +956,7 @@ async def download_participants(chat_id: int, format: str = "html"):
         participants = await get_chat_participants_guaranteed(client, entity, limit=50000)
         
         # Создаем безопасное имя файла
-        safe_chat_title = safe_filename(chat_title) or f"chat_{chat_id}"
+        safe_chat_title = safe_filename(chat_title) or f"chat_{chat_id_int}"
         
         if format == "html":
             content = generate_participants_html(chat_title, chat_link, participants)
@@ -1064,79 +1116,44 @@ def generate_participants_txt(chat_title, chat_link, participants):
     
     return content
 
-async def generate_chat_csv_with_media(client, entity, messages, media_files, period_name):
-    """Генерирует CSV файл с информацией о медиа"""
-    chat_title = getattr(entity, 'title', 'Личная переписка')
-    
-    output = io.StringIO()
-    writer = csv.writer(output)
-    
-    # Заголовки CSV с медиа
-    writer.writerow(['Дата', 'Тип', 'Отправитель', 'ID отправителя', 'Тип контента', 'Сообщение', 'Медиафайл'])
-    
-    # Создаем карту медиа
-    media_map = {m['message_id']: m for m in media_files}
-    
-    for message in reversed(messages):
-        if message.out:
-            message_type = "Исходящее"
-            sender = "Вы"
-            sender_id = message.sender_id
-        else:
-            message_type = "Входящее"
-            sender_obj = message.sender
-            if sender_obj:
-                sender = f"@{sender_obj.username}" if sender_obj.username else f"ID {sender_obj.id}"
-                sender_id = sender_obj.id
-            else:
-                sender = f"ID {message.sender_id}"
-                sender_id = message.sender_id
-        
-        # Определяем тип контента и медиа
-        if message.text:
-            content_type = "Текст"
-            message_text = message.text
-        elif message.media:
-            content_type = get_media_type(message.media)
-            message_text = f"[{content_type}]"
-        else:
-            content_type = "Пустое"
-            message_text = "[Пустое сообщение]"
-        
-        # Информация о медиа
-        media_info = ""
-        if message.id in media_map:
-            media_info = media_map[message.id]['file_path']
-        
-        writer.writerow([
-            message.date.strftime('%d.%m.%Y %H:%M:%S'),
-            message_type,
-            sender,
-            sender_id,
-            content_type,
-            message_text,
-            media_info
-        ])
-    
-    return output.getvalue()
+# Добавьте недостающие функции для скачивания периодов
+@app.get("/download_period/{chat_id}")
+async def download_period(chat_id: str, days: str = "all", format: str = "html"):
+    """Скачать историю чата за период с медиафайлами"""
+    return await handle_period_download(chat_id, days, format, with_media=True)
 
-# Старые функции для обратной совместимости
-@app.get("/download_chat/{chat_id}")
-async def download_chat(chat_id: int, format: str = "html"):
-    """Скачать всю историю чата (для обратной совместимости)"""
-    return await download_period(chat_id, "all", format)
+@app.get("/download_period_fast/{chat_id}")
+async def download_period_fast(chat_id: str, days: str = "all", format: str = "html"):
+    """Быстрое скачивание истории чата за период (без медиа)"""
+    return await handle_period_download(chat_id, days, format, with_media=False)
 
-async def generate_chat_html(client, entity, messages):
-    """Старая функция для обратной совместимости"""
-    return await generate_chat_html_with_media(client, entity, messages, [], "вся история")
+@app.get("/download_custom_period/{chat_id}")
+async def download_custom_period(chat_id: str, start_date: str, end_date: str, format: str):
+    """Скачать историю чата за пользовательский период"""
+    # Здесь должна быть реализация для кастомного периода
+    return HTMLResponse(f'<div class="success">📅 Кастомный период: {start_date} - {end_date}, формат: {format}</div>')
 
-async def generate_chat_txt(client, entity, messages):
-    """Старая функция для обратной совместимости"""
-    return await generate_chat_txt_with_media(client, entity, messages, [], "вся история")
+async def handle_period_download(chat_id: str, days: str, format: str, with_media: bool):
+    """Обработчик скачивания за период"""
+    if not clients:
+        return HTMLResponse("<h3>Нет активной сессии</h3>")
 
-async def generate_chat_csv(client, entity, messages):
-    """Старая функция для обратной совместимости"""
-    return await generate_chat_csv_with_media(client, entity, messages, [], "вся история")
+    try:
+        chat_id_int = int(chat_id)
+    except ValueError:
+        return HTMLResponse('<div class="error">❌ Неверный ID чата</div>')
+
+    return HTMLResponse(f'''
+        <div class="success">
+            📥 Запрос на скачивание:<br>
+            Чат ID: {chat_id_int}<br>
+            Период: {days}<br>
+            Формат: {format}<br>
+            Медиа: {'Да' if with_media else 'Нет'}<br>
+            <em>Функция в разработке...</em>
+        </div>
+        <a class="btn" href="/chat/{chat_id_int}">← Назад к чату</a>
+    ''')
 
 # Остальной код остается без изменений
 @app.get("/export_all")
@@ -1414,3 +1431,7 @@ async def download_export():
             "Content-Disposition": f"attachment; filename*=UTF-8''{encoded_filename}"
         }
     )
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=10000)
