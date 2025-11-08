@@ -599,10 +599,10 @@ def create_download_buttons(chat_id, chat_title):
         <div class="participants-download">
             <h4>👥 Скачать список участников:</h4>
             <div class="format-buttons">
-                <a class="btn-download small" href="/download_participants/{chat_id}?format=html">HTML</a>
-                <a class="btn-download small" href="/download_participants/{chat_id}?format=json">JSON</a>
-                <a class="btn-download small" href="/download_participants/{chat_id}?format=csv">CSV</a>
-                <a class="btn-download small" href="/download_participants/{chat_id}?format=txt">TXT</a>
+                <a class="btn-download small" href="/download_participants/{}?format=html">HTML</a>
+                <a class="btn-download small" href="/download_participants/{}?format=json">JSON</a>
+                <a class="btn-download small" href="/download_participants/{}?format=csv">CSV</a>
+                <a class="btn-download small" href="/download_participants/{}?format=txt">TXT</a>
             </div>
         </div>
         
@@ -629,7 +629,7 @@ def create_download_buttons(chat_id, chat_title):
         });
     }
     </script>
-    """
+    """.format(chat_id, chat_id, chat_id, chat_id)
     
     return buttons_html
 
