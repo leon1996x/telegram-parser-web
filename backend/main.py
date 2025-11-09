@@ -585,7 +585,7 @@ def create_download_buttons(chat_id, chat_title):
             </div>
         """
     
-    buttons_html += """
+    buttons_html += f"""
         </div>
         
         <div class="fast-download">
@@ -600,10 +600,10 @@ def create_download_buttons(chat_id, chat_title):
         <div class="participants-download">
             <h4>👥 Скачать список участников:</h4>
             <div class="format-buttons">
-                <a class="btn-download small" href="/download_participants/{}?format=html">HTML</a>
-                <a class="btn-download small" href="/download_participants/{}?format=json">JSON</a>
-                <a class="btn-download small" href="/download_participants/{}?format=csv">CSV</a>
-                <a class="btn-download small" href="/download_participants/{}?format=txt">TXT</a>
+                <a class="btn-download small" href="/download_participants/{chat_id}?format=html">HTML</a>
+                <a class="btn-download small" href="/download_participants/{chat_id}?format=json">JSON</a>
+                <a class="btn-download small" href="/download_participants/{chat_id}?format=csv">CSV</a>
+                <a class="btn-download small" href="/download_participants/{chat_id}?format=txt">TXT</a>
             </div>
         </div>
         
@@ -612,29 +612,29 @@ def create_download_buttons(chat_id, chat_title):
     </div>
     
     <script>
-    function showProgress(periodName) {
+    function showProgress(periodName) {{
         document.getElementById('progressContainer').style.display = 'block';
         document.getElementById('progressText').textContent = 'Подготовка ' + periodName + '...';
         
         let progress = 0;
-        const interval = setInterval(() => {
+        const interval = setInterval(() => {{
             progress += Math.random() * 10;
             if (progress > 90) progress = 90;
             document.getElementById('progressFill').style.width = progress + '%';
             document.getElementById('progressText').textContent = 'Обработка ' + periodName + '... ' + Math.round(progress) + '%';
-        }, 500);
+        }}, 500);
         
         // Остановить анимацию когда страница загрузится
-        window.addEventListener('beforeunload', () => {
+        window.addEventListener('beforeunload', () => {{
             clearInterval(interval);
-        });
-    }
+        }});
+    }}
     </script>
-    """.format(chat_id, chat_id, chat_id, chat_id)
+    """
     
     return buttons_html
 
-@app.get("/chat/{chat_id:int}")
+@app.get("/chat/{chat_id}")
 async def view_chat(chat_id: int, offset_id: int = Query(0, ge=0)):
     """Детальная страница чата - БЫСТРАЯ загрузка"""
     if not clients:
@@ -804,7 +804,7 @@ async def view_chat(chat_id: int, offset_id: int = Query(0, ge=0)):
     except Exception as e:
         return HTMLResponse(f'<div class="error">❌ Ошибка: {safe_error_message(e)}</div>')
 
-@app.get("/force_collect/{chat_id:int}")
+@app.get("/force_collect/{chat_id}")
 async def force_collect_participants(chat_id: int):
     """ПРИНУДИТЕЛЬНЫЙ сбор участников - читает ВСЕ сообщения"""
     if not clients:
@@ -910,7 +910,7 @@ async def force_collect_participants(chat_id: int):
     except Exception as e:
         return HTMLResponse(f'<div class="error">❌ Ошибка: {safe_error_message(e)}</div>')
 
-@app.get("/download_participants/{chat_id:int}")
+@app.get("/download_participants/{chat_id}")
 async def download_participants(chat_id: int, format: str = "html"):
     """Скачать список участников чата - ГАРАНТИРОВАННЫЙ сбор"""
     if not clients:
@@ -1098,21 +1098,20 @@ def generate_participants_txt(chat_title, chat_link, participants):
     
     return content
 
-# Добавьте недостающие функции для скачивания периодов
-@app.get("/download_period/{chat_id:int}")
+# Добавь недостающие маршруты
+@app.get("/download_period/{chat_id}")
 async def download_period(chat_id: int, days: str = "all", format: str = "html"):
     """Скачать историю чата за период с медиафайлами"""
     return await handle_period_download(chat_id, days, format, with_media=True)
 
-@app.get("/download_period_fast/{chat_id:int}")
+@app.get("/download_period_fast/{chat_id}")
 async def download_period_fast(chat_id: int, days: str = "all", format: str = "html"):
     """Быстрое скачивание истории чата за период (без медиа)"""
     return await handle_period_download(chat_id, days, format, with_media=False)
 
-@app.get("/download_custom_period/{chat_id:int}")
+@app.get("/download_custom_period/{chat_id}")
 async def download_custom_period(chat_id: int, start_date: str, end_date: str, format: str):
     """Скачать историю чата за пользовательский период"""
-    # Здесь должна быть реализация для кастомного периода
     return HTMLResponse(f'<div class="success">📅 Кастомный период: {start_date} - {end_date}, формат: {format}</div>')
 
 async def handle_period_download(chat_id: int, days: str, format: str, with_media: bool):
