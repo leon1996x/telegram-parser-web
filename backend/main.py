@@ -334,17 +334,19 @@ async def download_media_fast(client, message, chat_id):
         print(f"⚠️ Не удалось скачать медиа {message.id}: {safe_error_message(e)}")
         return None
 
-async def get_chat_participants_from_list(client, entity, limit=10000):
-    """Сбор участников ТОЛЬКО из списка участников"""
+async def get_chat_participants_from_list(client, entity):
+    """Сбор участников ТОЛЬКО из списка участников (БЕЗ ЛИМИТА)"""
     participants = {}
     
     print(f"🔍 Сбор участников ИЗ СПИСКА для: {getattr(entity, 'title', 'чата')}")
     
     try:
         if hasattr(entity, 'participants_count'):
-            print("👥 Получаем участников из списка...")
+            print(f"👥 Получаем участников из списка (всего в чате: {entity.participants_count})...")
             added_count = 0
-            async for user in client.iter_participants(entity, limit=limit):
+            
+            # БЕЗ ЛИМИТА - собираем всех участников
+            async for user in client.iter_participants(entity):
                 if user.id not in participants:
                     participants[user.id] = {
                         'id': user.id,
@@ -355,6 +357,11 @@ async def get_chat_participants_from_list(client, entity, limit=10000):
                         'source': 'participants_list_only'
                     }
                     added_count += 1
+                    
+                    # Прогресс каждые 1000 участников
+                    if added_count % 1000 == 0:
+                        print(f"👥 Собрано {added_count} участников из списка...")
+            
             print(f"✅ Добавлено {added_count} участников из списка")
         else:
             print("⚠️ Это не группа/канал, невозможно получить список участников")
@@ -618,7 +625,7 @@ def create_download_buttons(chat_id, chat_title):
                 <a class="btn-download small" href="/download_participants/{chat_id}?format=txt&source=list">TXT</a>
             </div>
             <p style="color:#666; font-size:12px; margin-top:8px;">
-                <strong>📋 ИЗ СПИСКА УЧАСТНИКОВ</strong> - официальный список участников группы/канала
+                <strong>📋 ИЗ СПИСКА УЧАСТНИКОВ</strong> - официальный список участников группы/канала (ВСЕ участники)
             </p>
         </div>
         
@@ -962,7 +969,8 @@ async def download_participants(chat_id: int, format: str = "html", source: str 
             source_color = "#ef4444"
         else:
             print(f"📥 Сбор участников ИЗ СПИСКА для: {chat_title}")
-            participants = await get_chat_participants_from_list(client, entity, limit=10000)
+            # БЕЗ ЛИМИТА - собираем ВСЕХ участников
+            participants = await get_chat_participants_from_list(client, entity)
             source_name = "из списка участников"
             source_color = "#3b82f6"
         
