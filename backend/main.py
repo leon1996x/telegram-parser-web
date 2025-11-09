@@ -111,7 +111,7 @@ def safe_error_message(error):
                 return error_str.encode(encoding, errors='replace').decode(encoding)
             except:
                 continue
-        # Если все кодировки не сработали, возвращаем базовое сообщение
+        # Если все кодировки не сработали, возвращаем базое сообщение
         return "Произошла ошибка при обработке данных"
     except:
         return "Неизвестная ошибка"
@@ -1173,7 +1173,7 @@ def generate_participants_txt(chat_title, chat_link, participants, source_name):
     
     return content
 
-# ДОБАВЛЯЕМ ФУНКЦИИ ПОИСКА
+# ФУНКЦИИ ПОИСКА
 
 @app.get("/admin", response_class=HTMLResponse)
 async def admin_panel():
@@ -1286,12 +1286,13 @@ async def admin_panel():
     """
 
 @app.get("/admin/search", response_class=HTMLResponse)
-async def admin_search(query: str, type: str = "keyword"):
+async def admin_search(query: str, type: str = "keyword", page: int = Query(1, ge=1)):
     """Поиск по ключевым словам или пользователям"""
     if not query.strip():
         return HTMLResponse('<div class="error">❌ Введите поисковый запрос</div>')
 
     results_html = ""
+    MESSAGES_PER_PAGE = 20
     
     if type == "keyword":
         # Поиск по ключевым словам
@@ -1305,16 +1306,47 @@ async def admin_search(query: str, type: str = "keyword"):
                 </div>
             ''')
         
+        # Собираем ВСЕ сообщения для пагинации
+        all_messages = []
         for chat_id, messages in results.items():
             chat_info = search_index['chats'].get(chat_id, {'title': f'Чат {chat_id}'})
             chat_title = chat_info.get('title', f'Чат {chat_id}')
             chat_link = chat_info.get('link', '#')
             
+            for msg_data in messages:
+                msg_data['chat_id'] = chat_id
+                msg_data['chat_title'] = chat_title
+                msg_data['chat_link'] = chat_link
+                all_messages.append(msg_data)
+        
+        # Сортируем по дате (новые сначала)
+        all_messages.sort(key=lambda x: x.get('date', ''), reverse=True)
+        
+        # Пагинация
+        total_messages = len(all_messages)
+        total_pages = (total_messages + MESSAGES_PER_PAGE - 1) // MESSAGES_PER_PAGE
+        start_idx = (page - 1) * MESSAGES_PER_PAGE
+        end_idx = start_idx + MESSAGES_PER_PAGE
+        page_messages = all_messages[start_idx:end_idx]
+        
+        # Группируем по чатам для отображения
+        chats_grouped = {}
+        for msg in page_messages:
+            chat_id = msg['chat_id']
+            if chat_id not in chats_grouped:
+                chats_grouped[chat_id] = {
+                    'title': msg['chat_title'],
+                    'link': msg['chat_link'],
+                    'messages': []
+                }
+            chats_grouped[chat_id]['messages'].append(msg)
+        
+        for chat_id, chat_data in chats_grouped.items():
             results_html += f'<div class="result-item">'
-            results_html += f'<div class="result-chat">💬 <a href="{chat_link}" target="_blank">{chat_title}</a> (ID: {chat_id})</div>'
-            results_html += f'<div class="result-meta">📊 Найдено сообщений: {len(messages)}</div>'
+            results_html += f'<div class="result-chat">💬 <a href="{chat_data["link"]}" target="_blank">{chat_data["title"]}</a> (ID: {chat_id})</div>'
+            results_html += f'<div class="result-meta">📊 Всего найдено в этом чате: {len(chat_data["messages"])}</div>'
             
-            for msg_data in messages[:5]:  # Показываем первые 5 сообщений
+            for msg_data in chat_data['messages']:
                 message = msg_data.get('message', '')
                 # Подсветка найденных слов
                 highlighted_message = highlight_text(message, query)
@@ -1323,15 +1355,26 @@ async def admin_search(query: str, type: str = "keyword"):
                 <div class="result-meta">
                     📅 {msg_data.get('date', '')} | 
                     👤 {msg_data.get('sender', 'Unknown')} |
-                    🔗 <a href="/chat/{chat_id}?highlight={query}">Перейти к чату</a>
+                    🔗 <a href="/chat/{chat_id}?highlight={query}" target="_blank">Перейти к чату</a>
                 </div>
                 <hr style="margin:10px 0; border:none; border-top:1px solid #e2e8f0;">
                 '''
             
-            if len(messages) > 5:
-                results_html += f'<div class="result-meta">... и еще {len(messages) - 5} сообщений</div>'
-            
             results_html += '</div>'
+        
+        # Пагинация
+        if total_pages > 1:
+            pagination_html = '<div class="pagination" style="text-align:center; margin:20px;">'
+            if page > 1:
+                pagination_html += f'<a class="btn" href="/admin/search?query={query}&type={type}&page={page-1}">← Назад</a>'
+            
+            pagination_html += f'<span style="margin:0 15px;">Страница {page} из {total_pages}</span>'
+            
+            if page < total_pages:
+                pagination_html += f'<a class="btn" href="/admin/search?query={query}&type={type}&page={page+1}">Вперед →</a>'
+            
+            pagination_html += '</div>'
+            results_html += pagination_html
     
     else:
         # Поиск по пользователям
@@ -1352,7 +1395,7 @@ async def admin_search(query: str, type: str = "keyword"):
                 <div class="result-chat">👤 Найден пользователь:</div>
                 <div class="result-message">
                     <strong>ID:</strong> {user_id}<br>
-                    <strong>Username:</strong> @{user_data.get('username', '')}<br>
+                    <strong>Username:</strong> @{user_data.get('username', 'не указан')}<br>
                     <strong>Имя:</strong> {user_data.get('first_name', '')} {user_data.get('last_name', '')}<br>
                     <strong>Телефон:</strong> {user_data.get('phone', 'Не указан')}
                 </div>
@@ -1372,6 +1415,7 @@ async def admin_search(query: str, type: str = "keyword"):
         <div style="text-align:center; padding:20px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white;">
             <h1>🔍 Результаты поиска: "{query}"</h1>
             <p>Тип поиска: {"🔤 Ключевые слова" if type == "keyword" else "👤 Пользователи"}</p>
+            <p>📊 Найдено результатов: {len(all_messages) if type == 'keyword' else len(results)}</p>
         </div>
         
         <div style="text-align:center; margin:20px;">
@@ -1424,7 +1468,7 @@ async def search_keywords(query):
     return results
 
 async def search_users(query):
-    """Поиск по пользователям"""
+    """Поиск по пользователям с защитой от None"""
     results = {}
     query_lower = query.lower()
     
@@ -1434,18 +1478,20 @@ async def search_users(query):
             results[user_id] = user_data
             continue
             
-        # Ищем по username
-        username = user_data.get('username', '').lower()
-        if query_lower in username:
+        # Ищем по username (с защитой от None)
+        username = user_data.get('username') or ''
+        if username and query_lower in username.lower():
             results[user_id] = user_data
             continue
             
-        # Ищем по имени
-        first_name = user_data.get('first_name', '').lower()
-        last_name = user_data.get('last_name', '').lower()
+        # Ищем по имени (с защитой от None)
+        first_name = user_data.get('first_name') or ''
+        last_name = user_data.get('last_name') or ''
         full_name = f"{first_name} {last_name}".strip().lower()
         
-        if query_lower in first_name or query_lower in last_name or query_lower in full_name:
+        if (first_name and query_lower in first_name.lower()) or \
+           (last_name and query_lower in last_name.lower()) or \
+           (full_name and query_lower in full_name):
             results[user_id] = user_data
     
     return results
@@ -1547,16 +1593,16 @@ async def index_message(message, chat_id):
         print(f"❌ Ошибка индексации сообщения: {safe_error_message(e)}")
 
 async def index_user(user, chat_id):
-    """Индексация пользователя"""
+    """Индексация пользователя с защитой от None"""
     try:
         user_id = user.id
         
         if user_id not in search_index['users']:
             search_index['users'][user_id] = {
-                'username': getattr(user, 'username', ''),
-                'first_name': getattr(user, 'first_name', ''),
-                'last_name': getattr(user, 'last_name', ''),
-                'phone': getattr(user, 'phone', ''),
+                'username': getattr(user, 'username', '') or '',
+                'first_name': getattr(user, 'first_name', '') or '',
+                'last_name': getattr(user, 'last_name', '') or '',
+                'phone': getattr(user, 'phone', '') or '',
                 'chats': set()
             }
         
@@ -1633,7 +1679,7 @@ async def clear_search_index():
     })
     return {"status": "index_cleared"}
 
-# ОСТАЛЬНЫЕ СУЩЕСТВУЮЩИЕ ФУНКЦИИ
+# ОСТАЛЬНЫЕ ФУНКЦИИ
 
 @app.get("/download_period/{chat_id}")
 async def download_period(chat_id: int, days: str = "all", format: str = "html"):
