@@ -24,6 +24,7 @@ import json
 import zipfile
 import io
 import asyncio
+import re
 
 app = FastAPI()
 
@@ -51,6 +52,14 @@ for folder in ["chats", "csv", "participants", "archives"]:
     os.makedirs(os.path.join(EXPORTS_DIR, folder), exist_ok=True)
 
 clients = {}
+
+# Глобальное хранилище для поиска (в памяти)
+search_index = {
+    'keywords': {},      # слово -> {chat_id: [message_ids]}
+    'users': {},         # user_id -> {username, first_name, etc}
+    'messages': {},      # message_id -> message_data
+    'chats': {}          # chat_id -> chat_info
+}
 
 # Middleware для принудительной UTF-8 кодировки
 @app.middleware("http")
@@ -147,6 +156,7 @@ async def login_file(session_file: UploadFile):
         return HTMLResponse('''
             <div class="success">✅ Успешный вход!</div>
             <a class="btn" href="/chats?offset=0">Показать чаты</a>
+            <a class="btn" href="/admin" style="background:#8b5cf6;">🔍 Админка поиска</a>
         ''')
     except Exception as e:
         return HTMLResponse(f'<div class="error">❌ Ошибка: {safe_error_message(e)}</div>')
@@ -166,6 +176,7 @@ async def login_manual(api_id: int = Form(...), api_hash: str = Form(...)):
         return HTMLResponse('''
             <div class="success">✅ Вход выполнен вручную!</div>
             <a class="btn" href="/chats?offset=0">Показать чаты</a>
+            <a class="btn" href="/admin" style="background:#8b5cf6;">🔍 Админка поиска</a>
         ''')
     except Exception as e:
         return HTMLResponse(f'<div class="error">❌ Ошибка: {safe_error_message(e)}</div>')
@@ -477,6 +488,7 @@ async def get_chats(offset: int = Query(0, ge=0)):
         
         <div style="text-align:center; margin:20px;">
             <a class="btn" href="/export_all" style="background:#10b981;">📁 Экспорт всех чатов (T3)</a>
+            <a class="btn" href="/admin" style="background:#8b5cf6;">🔍 Админка поиска</a>
         </div>
         
         <div class="chat-container">
@@ -657,7 +669,7 @@ def create_download_buttons(chat_id, chat_title):
     return buttons_html
 
 @app.get("/chat/{chat_id}")
-async def view_chat(chat_id: int, offset_id: int = Query(0, ge=0)):
+async def view_chat(chat_id: int, offset_id: int = Query(0, ge=0), highlight: str = None):
     """Детальная страница чата - БЫСТРАЯ загрузка"""
     if not clients:
         return HTMLResponse("<h3>Нет активной сессии</h3>")
@@ -681,6 +693,10 @@ async def view_chat(chat_id: int, offset_id: int = Query(0, ge=0)):
         chat_title = getattr(entity, 'title', 'Личная переписка')
         creation_date = await get_chat_creation_date(client, entity)
         chat_link = get_chat_link(entity)
+        
+        # АВТОМАТИЧЕСКАЯ ИНДЕКСАЦИЯ ПРИ ПЕРВОМ ПРОСМОТРЕ
+        if chat_id not in search_index['chats']:
+            asyncio.create_task(index_chat_on_view(client, entity))
         
         # БЫСТРЫЙ сбор участников - только последние 500 сообщений
         participants = await get_chat_participants_fast(client, entity, limit=500)
@@ -713,6 +729,9 @@ async def view_chat(chat_id: int, offset_id: int = Query(0, ge=0)):
             content = ""
             if message.text:
                 content = message.text
+                # Подсветка если есть параметр highlight
+                if highlight and highlight in content.lower():
+                    content = highlight_text(content, highlight)
             elif message.media:
                 media_type = get_media_type(message.media)
                 media_url = await download_media_fast(client, message, chat_id)
@@ -804,6 +823,7 @@ async def view_chat(chat_id: int, offset_id: int = Query(0, ge=0)):
                 </div>
                 
                 <a class="btn" href="/chats">← Назад к чатам</a>
+                <a class="btn" href="/admin" style="background:#8b5cf6;">🔍 Админка поиска</a>
             </div>
             
             <div class="messages-container">
@@ -825,6 +845,21 @@ async def view_chat(chat_id: int, offset_id: int = Query(0, ge=0)):
         
     except Exception as e:
         return HTMLResponse(f'<div class="error">❌ Ошибка: {safe_error_message(e)}</div>')
+
+async def index_chat_on_view(client, entity):
+    """Автоматическая индексация чата при просмотре"""
+    try:
+        chat_id = entity.id
+        chat_title = getattr(entity, 'title', 'Личная переписка')
+        
+        print(f"🔍 Автоматическая индексация чата: {chat_title}")
+        
+        # Индексируем только последние 200 сообщений для скорости
+        async for message in client.iter_messages(entity, limit=200):
+            await index_message(message, chat_id)
+            
+    except Exception as e:
+        print(f"❌ Ошибка автоматической индексации: {safe_error_message(e)}")
 
 @app.get("/force_collect/{chat_id}")
 async def force_collect_participants(chat_id: int):
@@ -1138,7 +1173,468 @@ def generate_participants_txt(chat_title, chat_link, participants, source_name):
     
     return content
 
-# Добавь недостающие маршруты
+# ДОБАВЛЯЕМ ФУНКЦИИ ПОИСКА
+
+@app.get("/admin", response_class=HTMLResponse)
+async def admin_panel():
+    """Админка с поиском"""
+    return """
+    <html>
+    <head>
+        <link rel="stylesheet" href="/static/style.css">
+        <title>Админка - Поиск</title>
+        <style>
+            .search-section { background: white; padding: 25px; margin: 20px auto; max-width: 800px; border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); }
+            .search-form { display: flex; flex-direction: column; gap: 15px; }
+            .search-input { padding: 12px; border: 2px solid #e2e8f0; border-radius: 8px; font-size: 16px; }
+            .search-type { display: flex; gap: 15px; margin: 10px 0; flex-wrap: wrap; }
+            .search-type label { display: flex; align-items: center; gap: 5px; padding: 8px 12px; background: #f8fafc; border-radius: 6px; }
+            .results { margin-top: 30px; }
+            .result-item { background: #f8fafc; padding: 15px; margin: 10px 0; border-radius: 8px; border-left: 4px solid #3b82f6; }
+            .result-chat { font-weight: bold; color: #1a202c; font-size: 16px; }
+            .result-message { color: #4a5568; margin: 5px 0; line-height: 1.4; }
+            .result-meta { color: #718096; font-size: 12px; margin-top: 5px; }
+            .highlight { background: yellow; padding: 2px; border-radius: 2px; font-weight: bold; }
+            .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 15px; margin: 20px 0; }
+            .stat-card { background: white; padding: 15px; border-radius: 8px; text-align: center; border: 1px solid #e2e8f0; }
+            .stat-number { font-size: 24px; font-weight: bold; color: #3b82f6; }
+        </style>
+    </head>
+    <body>
+        <div style="text-align:center; padding:20px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white;">
+            <h1>🔍 Админка - Поиск по всем данным</h1>
+            <p>Поиск по ключевым словам и пользователям во всех загруженных чатах</p>
+        </div>
+
+        <div class="search-section">
+            <h2>🔎 Поиск по ключевым словам</h2>
+            <form action="/admin/search" method="get" class="search-form">
+                <input type="text" name="query" class="search-input" placeholder="Введите ключевое слово или фразу..." required>
+                <div class="search-type">
+                    <label><input type="radio" name="type" value="keyword" checked> 🔤 По ключевым словам</label>
+                    <label><input type="radio" name="type" value="user"> 👤 По пользователям (ID/Username/Имя)</label>
+                </div>
+                <button type="submit" class="btn" style="padding:12px; font-size:16px; background:#8b5cf6;">🔍 Найти</button>
+            </form>
+        </div>
+
+        <div class="search-section">
+            <h2>📊 Статистика индекса поиска</h2>
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-number" id="wordCount">0</div>
+                    <div>🔤 Проиндексировано слов</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-number" id="userCount">0</div>
+                    <div>👥 Проиндексировано пользователей</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-number" id="messageCount">0</div>
+                    <div>💬 Проиндексировано сообщений</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-number" id="chatCount">0</div>
+                    <div>💬 Проиндексировано чатов</div>
+                </div>
+            </div>
+            <div style="text-align:center; margin-top:20px;">
+                <button class="btn" onclick="updateIndex()" style="background:#10b981;">🔄 Обновить индекс поиска</button>
+                <button class="btn" onclick="clearIndex()" style="background:#ef4444;">🗑️ Очистить индекс</button>
+            </div>
+        </div>
+
+        <div style="text-align:center; margin:30px;">
+            <a class="btn" href="/chats">💬 К списку чатов</a>
+            <a class="btn" href="/">🏠 На главную</a>
+        </div>
+
+        <script>
+            function updateIndex() {
+                fetch('/admin/update_index')
+                    .then(r => r.json())
+                    .then(data => {
+                        document.getElementById('wordCount').textContent = data.words || 0;
+                        document.getElementById('userCount').textContent = data.users || 0;
+                        document.getElementById('messageCount').textContent = data.messages || 0;
+                        document.getElementById('chatCount').textContent = data.chats || 0;
+                        alert('✅ Индекс обновлен!\\nСлов: ' + data.words + '\\nПользователей: ' + data.users + '\\nСообщений: ' + data.messages + '\\nЧатов: ' + data.chats);
+                    })
+                    .catch(err => {
+                        alert('❌ Ошибка обновления индекса');
+                    });
+            }
+
+            function clearIndex() {
+                if(confirm('Очистить весь индекс поиска? Это удалит все проиндексированные данные.')) {
+                    fetch('/admin/clear_index')
+                        .then(() => {
+                            updateIndex();
+                            alert('✅ Индекс очищен!');
+                        })
+                        .catch(err => {
+                            alert('❌ Ошибка очистки индекса');
+                        });
+                }
+            }
+
+            // Загружаем статистику при загрузке страницы
+            updateIndex();
+        </script>
+    </body>
+    </html>
+    """
+
+@app.get("/admin/search", response_class=HTMLResponse)
+async def admin_search(query: str, type: str = "keyword"):
+    """Поиск по ключевым словам или пользователям"""
+    if not query.strip():
+        return HTMLResponse('<div class="error">❌ Введите поисковый запрос</div>')
+
+    results_html = ""
+    
+    if type == "keyword":
+        # Поиск по ключевым словам
+        results = await search_keywords(query.lower())
+        if not results:
+            return HTMLResponse(f'''
+                <div class="error">❌ По запросу "{query}" ничего не найдено</div>
+                <div style="text-align:center; margin:20px;">
+                    <a class="btn" href="/admin">🔍 Новый поиск</a>
+                    <a class="btn" href="/admin/update_index">🔄 Обновить индекс</a>
+                </div>
+            ''')
+        
+        for chat_id, messages in results.items():
+            chat_info = search_index['chats'].get(chat_id, {'title': f'Чат {chat_id}'})
+            chat_title = chat_info.get('title', f'Чат {chat_id}')
+            chat_link = chat_info.get('link', '#')
+            
+            results_html += f'<div class="result-item">'
+            results_html += f'<div class="result-chat">💬 <a href="{chat_link}" target="_blank">{chat_title}</a> (ID: {chat_id})</div>'
+            results_html += f'<div class="result-meta">📊 Найдено сообщений: {len(messages)}</div>'
+            
+            for msg_data in messages[:5]:  # Показываем первые 5 сообщений
+                message = msg_data.get('message', '')
+                # Подсветка найденных слов
+                highlighted_message = highlight_text(message, query)
+                results_html += f'''
+                <div class="result-message">{highlighted_message}</div>
+                <div class="result-meta">
+                    📅 {msg_data.get('date', '')} | 
+                    👤 {msg_data.get('sender', 'Unknown')} |
+                    🔗 <a href="/chat/{chat_id}?highlight={query}">Перейти к чату</a>
+                </div>
+                <hr style="margin:10px 0; border:none; border-top:1px solid #e2e8f0;">
+                '''
+            
+            if len(messages) > 5:
+                results_html += f'<div class="result-meta">... и еще {len(messages) - 5} сообщений</div>'
+            
+            results_html += '</div>'
+    
+    else:
+        # Поиск по пользователям
+        results = await search_users(query)
+        if not results:
+            return HTMLResponse(f'''
+                <div class="error">❌ Пользователь "{query}" не найден</div>
+                <div style="text-align:center; margin:20px;">
+                    <a class="btn" href="/admin">🔍 Новый поиск</a>
+                    <a class="btn" href="/admin/update_index">🔄 Обновить индекс</a>
+                </div>
+            ''')
+        
+        for user_id, user_data in results.items():
+            chats_count = len(user_data.get('chats', []))
+            results_html += f'''
+            <div class="result-item">
+                <div class="result-chat">👤 Найден пользователь:</div>
+                <div class="result-message">
+                    <strong>ID:</strong> {user_id}<br>
+                    <strong>Username:</strong> @{user_data.get('username', '')}<br>
+                    <strong>Имя:</strong> {user_data.get('first_name', '')} {user_data.get('last_name', '')}<br>
+                    <strong>Телефон:</strong> {user_data.get('phone', 'Не указан')}
+                </div>
+                <div class="result-meta">
+                    📊 Упоминаний в чатах: {chats_count}
+                </div>
+            </div>
+            '''
+    
+    return f"""
+    <html>
+    <head>
+        <link rel="stylesheet" href="/static/style.css">
+        <title>Результаты поиска: {query}</title>
+    </head>
+    <body>
+        <div style="text-align:center; padding:20px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white;">
+            <h1>🔍 Результаты поиска: "{query}"</h1>
+            <p>Тип поиска: {"🔤 Ключевые слова" if type == "keyword" else "👤 Пользователи"}</p>
+        </div>
+        
+        <div style="text-align:center; margin:20px;">
+            <a class="btn" href="/admin">🔍 Новый поиск</a>
+            <a class="btn" href="/chats">💬 К чатам</a>
+            <a class="btn" href="/">🏠 На главную</a>
+        </div>
+        
+        <div style="max-width: 1000px; margin: 0 auto; padding: 20px;">
+            {results_html if results_html else '<div class="error">❌ Ничего не найдено</div>'}
+        </div>
+    </body>
+    </html>
+    """
+
+def highlight_text(text, query):
+    """Подсветка найденных слов в тексте"""
+    if not text or not query:
+        return text
+    
+    words = query.lower().split()
+    highlighted = str(text)
+    
+    for word in words:
+        if len(word) > 2:  # Подсвечиваем только слова длиннее 2 символов
+            pattern = re.compile(re.escape(word), re.IGNORECASE)
+            highlighted = pattern.sub(f'<span class="highlight">{word}</span>', highlighted)
+    
+    return highlighted
+
+async def search_keywords(query):
+    """Поиск по ключевым словам"""
+    results = {}
+    query_words = query.lower().split()
+    
+    for word in query_words:
+        if word in search_index['keywords']:
+            for chat_id, message_ids in search_index['keywords'][word].items():
+                if chat_id not in results:
+                    results[chat_id] = []
+                
+                for msg_id in message_ids:
+                    if msg_id in search_index['messages']:
+                        results[chat_id].append(search_index['messages'][msg_id])
+    
+    # Сортируем результаты по дате (новые сначала)
+    for chat_id in results:
+        results[chat_id].sort(key=lambda x: x.get('date', ''), reverse=True)
+    
+    return results
+
+async def search_users(query):
+    """Поиск по пользователям"""
+    results = {}
+    query_lower = query.lower()
+    
+    for user_id, user_data in search_index['users'].items():
+        # Ищем по ID
+        if query_lower in str(user_id).lower():
+            results[user_id] = user_data
+            continue
+            
+        # Ищем по username
+        username = user_data.get('username', '').lower()
+        if query_lower in username:
+            results[user_id] = user_data
+            continue
+            
+        # Ищем по имени
+        first_name = user_data.get('first_name', '').lower()
+        last_name = user_data.get('last_name', '').lower()
+        full_name = f"{first_name} {last_name}".strip().lower()
+        
+        if query_lower in first_name or query_lower in last_name or query_lower in full_name:
+            results[user_id] = user_data
+    
+    return results
+
+@app.get("/admin/update_index")
+async def update_search_index():
+    """Обновление индекса поиска по всем чатам"""
+    if not clients:
+        return {"error": "Нет активной сессии"}
+    
+    client = list(clients.values())[0]
+    
+    try:
+        # Очищаем старый индекс
+        search_index.clear()
+        search_index.update({
+            'keywords': {},
+            'users': {},
+            'messages': {},
+            'chats': {}
+        })
+        
+        # Получаем все диалоги
+        dialogs = await client.get_dialogs(limit=100)
+        total_messages = 0
+        
+        for dialog in dialogs:
+            entity = dialog.entity
+            chat_id = entity.id
+            chat_title = getattr(entity, 'title', 'Личная переписка')
+            
+            # Сохраняем информацию о чате
+            search_index['chats'][chat_id] = {
+                'title': chat_title,
+                'type': 'group' if hasattr(entity, 'participants_count') else 'private',
+                'link': get_chat_link(entity)
+            }
+            
+            print(f"🔍 Индексируем чат: {chat_title}")
+            
+            # Индексируем сообщения
+            async for message in client.iter_messages(entity, limit=1000):
+                await index_message(message, chat_id)
+                total_messages += 1
+                
+                # Прогресс каждые 100 сообщений
+                if total_messages % 100 == 0:
+                    print(f"📝 Проиндексировано {total_messages} сообщений...")
+        
+        return {
+            "status": "success",
+            "words": len(search_index['keywords']),
+            "users": len(search_index['users']),
+            "messages": len(search_index['messages']),
+            "chats": len(search_index['chats']),
+            "total_messages": total_messages
+        }
+        
+    except Exception as e:
+        return {"error": safe_error_message(e)}
+
+async def index_message(message, chat_id):
+    """Индексация одного сообщения для поиска"""
+    try:
+        message_id = f"{chat_id}_{message.id}"
+        
+        # Базовые данные сообщения
+        message_data = {
+            'id': message_id,
+            'chat_id': chat_id,
+            'date': message.date.strftime('%d.%m.%Y %H:%M') if message.date else '',
+            'text': '',
+            'sender': '',
+            'sender_id': None
+        }
+        
+        # Обрабатываем отправителя
+        if message.sender:
+            sender_id = message.sender.id
+            message_data['sender_id'] = sender_id
+            message_data['sender'] = get_sender_name(message.sender)
+            
+            # Индексируем пользователя
+            await index_user(message.sender, chat_id)
+        
+        # Обрабатываем текст сообщения
+        if message.text:
+            text = str(message.text)
+            message_data['text'] = text
+            message_data['message'] = text  # Для отображения в результатах
+            
+            # Индексируем ключевые слова
+            await index_keywords(text, chat_id, message_id)
+        
+        # Сохраняем сообщение
+        search_index['messages'][message_id] = message_data
+        
+    except Exception as e:
+        print(f"❌ Ошибка индексации сообщения: {safe_error_message(e)}")
+
+async def index_user(user, chat_id):
+    """Индексация пользователя"""
+    try:
+        user_id = user.id
+        
+        if user_id not in search_index['users']:
+            search_index['users'][user_id] = {
+                'username': getattr(user, 'username', ''),
+                'first_name': getattr(user, 'first_name', ''),
+                'last_name': getattr(user, 'last_name', ''),
+                'phone': getattr(user, 'phone', ''),
+                'chats': set()
+            }
+        
+        # Добавляем чат в список где встречался пользователь
+        search_index['users'][user_id]['chats'].add(chat_id)
+        
+    except Exception as e:
+        print(f"❌ Ошибка индексации пользователя: {safe_error_message(e)}")
+
+async def index_keywords(text, chat_id, message_id):
+    """Индексация ключевых слов из текста"""
+    try:
+        # Очищаем текст и разбиваем на слова
+        words = extract_keywords(text)
+        
+        for word in words:
+            if word not in search_index['keywords']:
+                search_index['keywords'][word] = {}
+            
+            if chat_id not in search_index['keywords'][word]:
+                search_index['keywords'][word][chat_id] = []
+            
+            if message_id not in search_index['keywords'][word][chat_id]:
+                search_index['keywords'][word][chat_id].append(message_id)
+                
+    except Exception as e:
+        print(f"❌ Ошибка индексации ключевых слов: {safe_error_message(e)}")
+
+def extract_keywords(text):
+    """Извлечение ключевых слов из текста"""
+    # Очищаем текст
+    clean_text = re.sub(r'[^\w\s]', ' ', str(text).lower())
+    
+    # Разбиваем на слова
+    words = clean_text.split()
+    
+    # Фильтруем стоп-слова и короткие слова
+    stop_words = {'и', 'в', 'на', 'с', 'по', 'для', 'не', 'что', 'это', 'как', 'так', 'вот', 'но', 'а', 'же', 'ли', 'бы', 'то', 'о', 'у', 'из', 'от', 'к', 'до', 'за', 'же', 'вы', 'ты', 'я', 'мы', 'он', 'она', 'они', 'оно'}
+    
+    keywords = []
+    for word in words:
+        if (len(word) > 2 and 
+            word not in stop_words and 
+            not word.isdigit() and
+            not word.startswith('http')):
+            keywords.append(word)
+    
+    return keywords
+
+def get_sender_name(sender):
+    """Получение имени отправителя"""
+    try:
+        if hasattr(sender, 'username') and sender.username:
+            return f"@{sender.username}"
+        elif hasattr(sender, 'first_name') and sender.first_name:
+            name = sender.first_name
+            if hasattr(sender, 'last_name') and sender.last_name:
+                name += f" {sender.last_name}"
+            return name
+        else:
+            return f"User {sender.id}"
+    except:
+        return "Unknown"
+
+@app.get("/admin/clear_index")
+async def clear_search_index():
+    """Очистка индекса поиска"""
+    search_index.clear()
+    search_index.update({
+        'keywords': {},
+        'users': {}, 
+        'messages': {},
+        'chats': {}
+    })
+    return {"status": "index_cleared"}
+
+# ОСТАЛЬНЫЕ СУЩЕСТВУЮЩИЕ ФУНКЦИИ
+
 @app.get("/download_period/{chat_id}")
 async def download_period(chat_id: int, days: str = "all", format: str = "html"):
     """Скачать историю чата за период с медиафайлами"""
@@ -1171,7 +1667,6 @@ async def handle_period_download(chat_id: int, days: str, format: str, with_medi
         <a class="btn" href="/chat/{chat_id}">← Назад к чату</a>
     ''')
 
-# Остальной код остается без изменений
 @app.get("/export_all")
 async def export_all():
     """Экспорт всех чатов в HTML и CSV"""
